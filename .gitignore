@@ -1,0 +1,12 @@
+config.ini
+api-key
+*.key
+private.key
+public.key
+__pycache__/
+logs/
+vps/zip-staging/
+vps/caddy-data/
+vps/caddy-config/
+.env
+!.env.example

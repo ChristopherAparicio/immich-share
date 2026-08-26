@@ -1,0 +1,13 @@
+# Caddy 2.11.4 and the rate-limit module, both pinned. The digest identifies the
+# multi-architecture index so this Dockerfile works on amd64 and arm64.
+FROM caddy:2.11.4-builder@sha256:4bdeabce8e79d36b23d1cba7d20598cec2c1117ace960d8ca06071f945e8fc9b AS builder
+RUN xcaddy build \
+    --with github.com/mholt/caddy-ratelimit@v0.1.0 \
+    --replace google.golang.org/grpc=google.golang.org/grpc@v1.82.1 \
+    --replace golang.org/x/net=golang.org/x/net@v0.56.0
+
+FROM caddy:2.11.4-alpine@sha256:5f5c8640aae01df9654968d946d8f1a56c497f1dd5c5cda4cf95ab7c14d58648
+# curl is unused. Removing it reduces the installed attack surface.
+RUN apk upgrade --no-cache \
+ && apk del --no-cache curl
+COPY --from=builder /usr/bin/caddy /usr/bin/caddy

@@ -1,0 +1,142 @@
+# VPS edge — Caddy with rate limiting and immich-public-proxy.
+# Target directory: /srv/photo-share/. See SETUP.md.
+services:
+  caddy:
+    build:
+      context: .
+      dockerfile: Dockerfile.caddy
+    container_name: caddy
+    init: true
+    restart: unless-stopped
+    environment:
+      - PUBLIC_DOMAIN=${PUBLIC_DOMAIN:-photos.example.com}
+    ports:
+      - "80:80"     # HTTP-01 + redirection → 443
+      - "443:443"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - ./shares.d:/etc/caddy/shares.d:ro   # Written by immich-share over SSH.
+      - ./caddy-data:/data
+      - ./caddy-config:/config
+    user: "1000:1000"
+    read_only: true
+    tmpfs:
+      - /tmp:size=16m,mode=1777,noexec,nosuid,nodev
+    cap_drop:
+      - ALL
+    cap_add:
+      - NET_BIND_SERVICE
+    security_opt:
+      - no-new-privileges:true
+    mem_limit: ${CADDY_MEMORY_LIMIT:-128m}
+    cpus: ${CADDY_CPU_LIMIT:-0.50}
+    pids_limit: ${CADDY_PIDS_LIMIT:-128}
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+    networks:
+      - public_net
+      - app_net
+
+  ipp:
+    # IPP 3.2.1 pinned by a multi-architecture digest.
+    build:
+      context: .
+      dockerfile: Dockerfile.ipp
+    image: immich-share-ipp:3.2.1-hardened
+    container_name: ipp
+    init: true
+    restart: unless-stopped
+    environment:
+      # NAS-side filtering nginx over WireGuard, never Immich directly.
+      - IMMICH_URL=http://${NAS_WG_ADDRESS:?set NAS_WG_ADDRESS in .env}:2283
+      - PUBLIC_BASE_URL=https://${PUBLIC_DOMAIN:-photos.example.com}
+      - TMPDIR=/zip-staging
+    volumes:
+      - ./ipp-config.json:/app/config.json:ro
+      - ./zip-staging:/zip-staging
+    # Container hardening.
+    read_only: true
+    tmpfs:
+      - /tmp:size=${IPP_TMPFS_SIZE:-256m},mode=1777,noexec,nosuid,nodev
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    user: "1000:1000"
+    mem_limit: ${IPP_MEMORY_LIMIT:-512m}
+    cpus: ${IPP_CPU_LIMIT:-1.00}
+    pids_limit: ${IPP_PIDS_LIMIT:-256}
+    ulimits:
+      nofile:
+        soft: 4096
+        hard: 4096
+    stop_grace_period: 30s
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+    networks:
+      - app_net
+      - tunnel_net
+
+  # Receives only download routes from Caddy. Gallery HTML, thumbnails, preview
+  # zoom, and metadata continue directly from Caddy to IPP.
+  download-guard:
+    build:
+      context: .
+      dockerfile: Dockerfile.nginx
+    image: immich-share-nginx:1.31.4-hardened
+    container_name: download-guard
+    init: true
+    restart: unless-stopped
+    user: "101:101"
+    depends_on:
+      - ipp
+    environment:
+      NGINX_ENVSUBST_FILTER: "^(DOWNLOAD_|ZIP_|IPP_UPSTREAM$)"
+      IPP_UPSTREAM: ipp:3000
+      DOWNLOAD_RATE: ${DOWNLOAD_RATE:-2m}
+      DOWNLOAD_RATE_AFTER: ${DOWNLOAD_RATE_AFTER:-1m}
+      DOWNLOAD_PER_IP: ${DOWNLOAD_PER_IP:-2}
+      DOWNLOAD_GLOBAL: ${DOWNLOAD_GLOBAL:-6}
+      DOWNLOAD_LIMIT_DRY_RUN: ${DOWNLOAD_LIMIT_DRY_RUN:-off}
+      ZIP_RATE: ${ZIP_RATE:-2m}
+      ZIP_RATE_AFTER: ${ZIP_RATE_AFTER:-1m}
+      ZIP_GLOBAL: ${ZIP_GLOBAL:-1}
+    volumes:
+      - ./download-guard-nginx.conf:/etc/nginx/nginx.conf:ro
+      - ./download-guard.conf.template:/etc/nginx/templates/default.conf.template:ro
+      - ./zip-busy.html:/usr/share/nginx/html/zip-busy.html:ro
+      - ./zip-too-large.html:/usr/share/nginx/html/zip-too-large.html:ro
+      - ./zip-unavailable.html:/usr/share/nginx/html/zip-unavailable.html:ro
+    read_only: true
+    tmpfs:
+      - /etc/nginx/conf.d:size=1m,mode=0755,uid=101,gid=101,noexec,nosuid,nodev
+      - /var/cache/nginx:size=4m,mode=0755,uid=101,gid=101,noexec,nosuid,nodev
+      - /var/run:size=1m,mode=0755,uid=101,gid=101,noexec,nosuid,nodev
+      - /tmp:size=1m,mode=1777,uid=101,gid=101,noexec,nosuid,nodev
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    mem_limit: ${DOWNLOAD_GUARD_MEMORY_LIMIT:-64m}
+    cpus: ${DOWNLOAD_GUARD_CPU_LIMIT:-0.25}
+    pids_limit: ${DOWNLOAD_GUARD_PIDS_LIMIT:-32}
+    stop_grace_period: 10s
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+    networks:
+      - app_net
+
+networks:
+  public_net:
+  app_net:
+    internal: true
+  tunnel_net:

@@ -1,0 +1,112 @@
+# NAS — WireGuard container and filtering nginx.
+# Integrate with the existing Immich Compose project. Attach immich_server to a
+# dedicated external network first; PostgreSQL, Redis, and unrelated NAS
+# services must not be attached to that network.
+services:
+  wireguard:
+    build:
+      context: .
+      dockerfile: Dockerfile.wireguard
+    image: immich-share-wireguard:1.0.20260223-r0
+    container_name: wg-tunnel
+    cap_add:
+      - NET_ADMIN
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    sysctls:
+      # Critical: no forwarding, so the VPS cannot pivot into the home LAN.
+      - net.ipv4.ip_forward=0
+    volumes:
+      - ./wg0-nas.conf:/config/wg0.conf:ro
+    read_only: true
+    tmpfs:
+      - /run:size=2m,mode=0755,nosuid,nodev
+      - /tmp:size=2m,mode=1777,noexec,nosuid,nodev
+    networks:
+      - immich_share_net
+    restart: unless-stopped
+    mem_limit: ${WG_MEMORY_LIMIT:-128m}
+    cpus: ${WG_CPU_LIMIT:-0.50}
+    pids_limit: ${WG_PIDS_LIMIT:-128}
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  # Fail-closed filter: only shared-link routes pass; everything else returns
+  # 404 and triggers the tripwire. It shares the tunnel network namespace and
+  # listens on the NAS WireGuard address. immich-share starts/stops THIS
+  # container; stopped
+  # means a closed port even when the VPS is fully compromised.
+  nginx-filter:
+    build:
+      context: .
+      dockerfile: Dockerfile.nginx
+    image: immich-share-nginx:1.31.4-hardened
+    container_name: wg-nginx-filter
+    init: true
+    user: "101:101"
+    network_mode: service:wireguard
+    environment:
+      NGINX_ENVSUBST_FILTER: "^NAS_WG_ADDRESS$"
+      NAS_WG_ADDRESS: ${NAS_WG_ADDRESS:?set NAS_WG_ADDRESS in .env}
+    volumes:
+      - ./nginx-filter.conf:/etc/nginx/templates/default.conf.template:ro
+      - ./logs:/var/log/nginx
+    read_only: true
+    tmpfs:
+      - /etc/nginx/conf.d:size=1m,mode=0755,uid=101,gid=101,noexec,nosuid,nodev
+      - /var/cache/nginx:size=16m,mode=0755,uid=101,gid=101,noexec,nosuid,nodev
+      - /var/run:size=1m,mode=0755,uid=101,gid=101,noexec,nosuid,nodev
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    depends_on:
+      - wireguard
+    restart: unless-stopped
+    mem_limit: ${NGINX_MEMORY_LIMIT:-96m}
+    cpus: ${NGINX_CPU_LIMIT:-0.50}
+    pids_limit: ${NGINX_PIDS_LIMIT:-64}
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  logrotate:
+    build:
+      context: .
+      dockerfile: Dockerfile.logrotate
+    image: immich-share-logrotate:1
+    container_name: immich-share-logrotate
+    init: true
+    user: "101:101"
+    network_mode: none
+    volumes:
+      - ./logs:/var/log/nginx
+      - ./logrotate.conf:/etc/logrotate.conf:ro
+    read_only: true
+    tmpfs:
+      - /tmp:size=1m,mode=0700,uid=101,gid=101,noexec,nosuid,nodev
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    restart: unless-stopped
+    mem_limit: 32m
+    cpus: 0.10
+    pids_limit: 16
+    logging:
+      driver: json-file
+      options:
+        max-size: "1m"
+        max-file: "2"
+
+networks:
+  immich_share_net:
+    external: true
+    name: ${IMMICH_SHARE_DOCKER_NETWORK:-immich_share}

@@ -1,0 +1,11 @@
+# Separate controller: merge into ~/.ssh/config and use only with the forced
+# authorized_keys entry from ssh-forward-gate.example.
+Host nas-photo-gate
+    HostName <NAS_HOST>
+    User immich-share-gate
+    IdentityFile ~/.config/immich-share/nas-forward-key
+    IdentitiesOnly yes
+    ForwardAgent no
+    ClearAllForwardings yes
+    RequestTTY no
+    StrictHostKeyChecking yes

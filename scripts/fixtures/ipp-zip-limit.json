@@ -1,0 +1,8 @@
+{
+  "ipp": {
+    "downloadFromImmichConcurrencyLimit": 2,
+    "maxDownloadZipBytes": 1048576,
+    "minDownloadZipFreeBytes": 0,
+    "downloadZipCacheTtlSeconds": 60
+  }
+}

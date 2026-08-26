@@ -1,0 +1,157 @@
+# Generated at startup by envsubst from DOWNLOAD_*, ZIP_*, and IPP_UPSTREAM only.
+
+map $http_x_client_ip $download_client_key {
+    "" $remote_addr;
+    default $http_x_client_ip;
+}
+
+map $http_x_download_guard $download_guard_authorized {
+    default 0;
+    "caddy-internal-v1" 1;
+}
+
+limit_conn_zone $download_client_key zone=download_per_ip:1m;
+limit_conn_zone $server_name zone=download_global:1m;
+limit_conn_zone $server_name zone=zip_global:1m;
+
+# Do not log URLs here because they contain share keys. These metrics remain
+# useful without copying that credential into another log.
+log_format download_guard
+    '$time_iso8601 client=$download_client_key status=$status bytes=$body_bytes_sent '
+    'duration=$request_time conn=$limit_conn_status';
+
+server {
+    listen 8080;
+    server_name download-guard;
+    server_tokens off;
+
+    access_log /dev/stdout download_guard;
+    error_log /dev/stderr warn;
+
+    client_max_body_size 1k;
+    client_header_timeout 10s;
+    client_body_timeout 10s;
+    send_timeout 10m;
+
+    limit_conn_dry_run ${DOWNLOAD_LIMIT_DRY_RUN};
+    limit_conn_log_level notice;
+    limit_conn_status 429;
+    error_page 429 = @download_busy;
+
+    location @download_busy {
+        default_type text/plain;
+        add_header Retry-After 30 always;
+        return 429 "Too many simultaneous downloads\n";
+    }
+
+    # Internal pages: no visible redirect and no details about another visitor,
+    # share, progress, or server throughput.
+    location = /zip-busy.html {
+        internal;
+        root /usr/share/nginx/html;
+        add_header Retry-After 30 always;
+        add_header Cache-Control "no-store" always;
+        add_header Content-Security-Policy "default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; base-uri 'none'; form-action 'none'" always;
+    }
+
+    location = /zip-too-large.html {
+        internal;
+        root /usr/share/nginx/html;
+        add_header Cache-Control "no-store" always;
+        add_header Content-Security-Policy "default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; base-uri 'none'; form-action 'none'" always;
+    }
+
+    location = /zip-unavailable.html {
+        internal;
+        root /usr/share/nginx/html;
+        add_header Retry-After 60 always;
+        add_header Cache-Control "no-store" always;
+        add_header Content-Security-Policy "default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; base-uri 'none'; form-action 'none'" always;
+    }
+
+    # Fail closed: accept only the exact download route and require the internal
+    # marker overwritten by Caddy on the private Docker network. $remote_addr is
+    # only a fallback client key; authorization always depends on the marker.
+    location ~ "^/share/(photo|video)/[A-Za-z0-9_-]{8,128}/[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}/original/?$" {
+        if ($download_guard_authorized = 0) {
+            return 403;
+        }
+
+        limit_except GET {
+            deny all;
+        }
+
+        limit_conn download_per_ip ${DOWNLOAD_PER_IP};
+        limit_conn download_global ${DOWNLOAD_GLOBAL};
+        limit_rate_after ${DOWNLOAD_RATE_AFTER};
+        limit_rate ${DOWNLOAD_RATE};
+
+        proxy_pass http://${IPP_UPSTREAM};
+        proxy_http_version 1.1;
+        # `limit_rate` needs the buffered path. Buffers stay small and
+        # `proxy_max_temp_file_size 0` prevents media staging in nginx.
+        proxy_buffering on;
+        proxy_buffer_size 16k;
+        proxy_buffers 4 16k;
+        proxy_busy_buffers_size 32k;
+        proxy_max_temp_file_size 0;
+        proxy_request_buffering off;
+        proxy_connect_timeout 5s;
+        proxy_send_timeout 60s;
+        proxy_read_timeout 10m;
+
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $download_client_key;
+        proxy_set_header X-Forwarded-For $download_client_key;
+        proxy_set_header X-Forwarded-Proto $http_x_forwarded_proto;
+        proxy_set_header X-Client-IP "";
+        proxy_set_header X-Download-Guard "";
+        proxy_set_header Connection "";
+    }
+
+    # Album or selection ZIP: one active stream on a small VPS. IPP bounds disk
+    # staging; this proxy applies bandwidth limits and readable error pages.
+    location ~ "^/share/[A-Za-z0-9_-]{8,128}/download/?$" {
+        if ($download_guard_authorized = 0) {
+            return 403;
+        }
+
+        limit_except GET POST {
+            deny all;
+        }
+
+        client_max_body_size 64k;
+        limit_conn zip_global ${ZIP_GLOBAL};
+        limit_rate_after ${ZIP_RATE_AFTER};
+        limit_rate ${ZIP_RATE};
+        error_page 429 =429 /zip-busy.html;
+        error_page 413 =413 /zip-too-large.html;
+        error_page 507 =507 /zip-unavailable.html;
+
+        proxy_pass http://${IPP_UPSTREAM};
+        proxy_http_version 1.1;
+        proxy_intercept_errors on;
+        proxy_ignore_headers X-Accel-Buffering;
+        proxy_buffering on;
+        proxy_buffer_size 16k;
+        proxy_buffers 4 16k;
+        proxy_busy_buffers_size 32k;
+        proxy_max_temp_file_size 0;
+        proxy_request_buffering off;
+        proxy_connect_timeout 5s;
+        proxy_send_timeout 60s;
+        proxy_read_timeout 45m;
+
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $download_client_key;
+        proxy_set_header X-Forwarded-For $download_client_key;
+        proxy_set_header X-Forwarded-Proto $http_x_forwarded_proto;
+        proxy_set_header X-Client-IP "";
+        proxy_set_header X-Download-Guard "";
+        proxy_set_header Connection "";
+    }
+
+    location / {
+        return 404;
+    }
+}

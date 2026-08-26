@@ -1,0 +1,71 @@
+# Closed-by-default portal.
+# Validate rate_limit syntax against the module README during deployment:
+#    https://github.com/mholt/caddy-ratelimit
+{
+	# `first` is required because imported handle blocks otherwise terminate routing.
+	order rate_limit first
+
+	# Long Safari iOS ZIP downloads were interrupted over HTTP/3 while the same
+	# transfer completed over HTTP/1.1. HTTP/2 keeps TLS and multiplexing over TCP.
+	servers :443 {
+		protocols h1 h2
+	}
+}
+
+{$PUBLIC_DOMAIN:photos.example.com} {
+	# Shared-link authentication rate limit. IPP has no built-in throttle.
+	# /share/unlock is global because the key is carried in the request body.
+	# The matcher belongs inside the zone; an external Caddy matcher is ignored.
+	rate_limit {
+		zone share_auth {
+			match {
+				method POST
+				path /share/unlock
+			}
+			key {remote_host}
+			ipv6_prefix 64
+			events 10
+			window 1m
+		}
+		# Absorb repeated clicks. The download guard handles long-lived concurrency.
+		zone share_bulk_download {
+			match {
+				method GET POST
+				path /share/*/download /s/*/download
+			}
+			key {remote_host}
+			ipv6_prefix 64
+			events 10
+			window 1m
+		}
+	}
+
+	# Browser defenses: strict TLS, no framing, and no share-key leakage in Referer.
+	header {
+		Strict-Transport-Security "max-age=31536000; includeSubDomains"
+		X-Content-Type-Options "nosniff"
+		X-Frame-Options "DENY"
+		Referrer-Policy "no-referrer"
+		Permissions-Policy "camera=(), geolocation=(), microphone=()"
+		-Server
+	}
+
+	# One generated file per active share. An empty directory exposes no handler.
+	import /etc/caddy/shares.d/*.caddy
+
+	# This log contains /share/<key>, which is a credential component. Keep it
+	# only on the disposable VPS with short retention. Home-side telemetry ingests
+	# it continuously. A key remains insufficient without the share password.
+	log {
+		output file /data/access.log {
+			mode 0600
+			roll_size 5mb
+			roll_keep 1
+			roll_keep_for 24h
+		}
+	}
+
+	handle {
+		respond "Not found" 404
+	}
+}
