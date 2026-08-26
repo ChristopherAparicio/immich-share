@@ -1,0 +1,11 @@
+# Merge this block into the NAS controller user's ~/.ssh/config.
+Host vps-photos-via-wg
+    HostName <WG_VPS_ADDRESS>
+    User debian
+    IdentityFile ~/.config/immich-share/vps-controller-key
+    IdentitiesOnly yes
+    ForwardAgent no
+    ClearAllForwardings yes
+    RequestTTY no
+    HostKeyAlias vps-photos-wireguard
+    ProxyCommand docker exec -i wg-tunnel nc %h %p

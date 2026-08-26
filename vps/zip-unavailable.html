@@ -1,0 +1,22 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Download unavailable</title>
+  <style>
+    :root { color-scheme: light dark; font-family: system-ui, sans-serif; }
+    body { margin: 0; min-height: 100vh; display: grid; place-items: center; background: #111827; color: #f9fafb; }
+    main { width: min(34rem, calc(100% - 3rem)); text-align: center; }
+    p { color: #d1d5db; line-height: 1.55; }
+    button { margin-top: 1rem; padding: .8rem 1.1rem; border: 0; border-radius: .6rem; font: inherit; font-weight: 650; cursor: pointer; }
+  </style>
+</head>
+<body>
+  <main>
+    <h1>ZIP download temporarily unavailable</h1>
+    <p>The server keeps a storage reserve to remain stable. Try again later or download files individually.</p>
+    <button type="button" onclick="history.back()">Back to the album</button>
+  </main>
+</body>
+</html>

@@ -1,0 +1,2 @@
+# Run `crontab -e` as the NAS controller user and adapt the absolute path.
+*/5 * * * * <PRIVATE_INSTALL_DIR>/immich-share sweep >><PRIVATE_STATE_DIR>/sweep.log 2>&1

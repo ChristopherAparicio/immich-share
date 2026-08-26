@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+  <key>Label</key><string>local.photo-tripwire</string>
+  <key>ProgramArguments</key><array>
+    <string>&lt;CONTROLLER_INSTALL_DIR&gt;/macmini/denied-tripwire.sh</string>
+  </array>
+  <key>EnvironmentVariables</key><dict>
+    <key>NAS_LOG</key><string>&lt;PRIVATE_NAS_DENIED_LOG_PATH&gt;</string>
+    <key>NAS_SSH_TARGET</key><string>&lt;NAS_SSH_ALIAS&gt;</string>
+  </dict>
+  <key>KeepAlive</key><true/>
+  <key>RunAtLoad</key><true/>
+  <key>StandardOutPath</key><string>/tmp/photo-tripwire.log</string>
+  <key>StandardErrorPath</key><string>/tmp/photo-tripwire.log</string>
+</dict></plist>

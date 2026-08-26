@@ -1,0 +1,3 @@
+# Prefix the dedicated controller public key with this restriction in the NAS
+# account's authorized_keys. Keep the entire entry on one line.
+restrict,command="/usr/local/sbin/immich-share-forward-command" ssh-ed25519 <CONTROLLER_PUBLIC_KEY> immich-share-forward-gate

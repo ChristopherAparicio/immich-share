@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<!-- Automatically closes the portal: removes expired links and Caddy
+	     snippets, then disables the NAS forward when no share remains active.
+	     Install: copy to ~/Library/LaunchAgents/, then run
+	     launchctl load ~/Library/LaunchAgents/local.immich-share-sweep.plist -->
+	<key>Label</key>
+	<string>local.immich-share-sweep</string>
+	<key>ProgramArguments</key>
+	<array>
+		<string>&lt;CONTROLLER_INSTALL_DIR&gt;/immich-share</string>
+		<string>sweep</string>
+	</array>
+	<key>StartInterval</key>
+	<integer>900</integer>
+	<key>RunAtLoad</key>
+	<true/>
+	<key>StandardOutPath</key>
+	<string>/tmp/immich-share-sweep.log</string>
+	<key>StandardErrorPath</key>
+	<string>/tmp/immich-share-sweep.log</string>
+</dict>
+</plist>

@@ -1,0 +1,21 @@
+{
+	"ipp": {
+		"showHomePage": false,
+		"allowDownload": 1,
+		"maxDownloadQuality": "original",
+		"maxZoomQuality": "preview",
+		"downloadFromImmichConcurrencyLimit": 3,
+		"maxDownloadZipBytes": 2147483648,
+		"minDownloadZipFreeBytes": 5368709120,
+		"downloadZipCacheTtlSeconds": 1800,
+		"showMetadata": {
+			"exif": {},
+			"location": {}
+		},
+		"gallery": {
+			"showExpiryDate": true,
+			"showDownloadZip": true
+		},
+		"customInvalidResponse": 404
+	}
+}
