@@ -11,6 +11,10 @@ services:
     container_name: wg-tunnel
     cap_add:
       - NET_ADMIN
+      # The host-side WireGuard configuration stays mode 0600 and is owned by
+      # the NAS operator. After dropping every default capability, root inside
+      # the container otherwise cannot read that single read-only bind mount.
+      - DAC_READ_SEARCH
     cap_drop:
       - ALL
     security_opt:

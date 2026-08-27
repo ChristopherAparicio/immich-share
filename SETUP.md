@@ -125,7 +125,10 @@ values; replace the `<WG_...>` placeholders only in deployed copies.
    `nas/.env.example` to `nas/.env`; set the private `NAS_WG_ADDRESS`, and change
    `IMMICH_SHARE_DOCKER_NETWORK` only if the dedicated network has another
    name. `nginx-filter.conf` is an envsubst template, so the real address stays
-   only in the ignored `.env`. Create `logs/` owned by UID/GID 101 with mode
+   only in the ignored `.env`. The WireGuard container keeps only
+   `NET_ADMIN` and `DAC_READ_SEARCH`; the latter is required to read the
+   operator-owned `wg0-nas.conf` kept at mode 0600 through its single
+   read-only bind mount. Create `logs/` owned by UID/GID 101 with mode
    0750 and grant the
    tripwire account read access without making it world-readable. Inside the
    tunnel container, verify `sysctl net.ipv4.ip_forward` returns `0`.
