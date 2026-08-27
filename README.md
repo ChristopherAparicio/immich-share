@@ -41,9 +41,9 @@
 
 ## Components
 
-**Third-party (you configure, you don't fork):**
+**Third-party and separately licensed components:**
 - [Immich](https://immich.app) — your photo library (the source of truth)
-- [`immich-public-proxy`](https://github.com/alangrainger/immich-public-proxy) — stateless proxy that serves only shared links (AGPL-3.0)
+- [`immich-public-proxy`](https://github.com/ChristopherAparicio/immich-public-proxy) — our separately maintained, security-focused fork of the stateless public gallery (AGPL-3.0)
 - [Caddy](https://caddyserver.com) + [`caddy-ratelimit`](https://github.com/mholt/caddy-ratelimit) — TLS + rate limiting
 - [WireGuard](https://www.wireguard.com) — the home↔VPS tunnel
 
@@ -87,7 +87,14 @@ Most tutorials wave security away. This one has a real model — read [`SETUP.md
 
 - **The provider *can* technically read RAM and a short-lived ZIP cache during a share window.** We don't pretend otherwise. The window is narrow and the cache is deleted automatically. True zero-knowledge requires a different design (e.g. [Ente](https://ente.io)) with export friction.
 - **A compromised VPS is contained by topology, not by the VPS itself:** filtering nginx (fail-closed) on the trusted side, no route to the LAN, `pf` blocking the admin machine, and a `denied.log` tripwire that pings you on the first probe.
-- **Caveat on "stateless":** the proxy writes no photos, but Caddy keeps a short-lived access log on the VPS that contains the share URLs — i.e. the share *keys*. The share key also crosses WireGuard to IPP/Immich as part of the request. A compromised VPS can therefore read a key during an active share, but a key alone is useless without its password. The NAS nginx logs deliberately retain only method + normalized path and never the query string; its error log is disabled because nginx error entries can echo the raw `?key=` request.
+- **Caveat on "stateless":** the proxy writes no photos, but Caddy keeps a
+  short-lived access log on the VPS. Share-key path segments and credential
+  query values are redacted before that log is written. The share key still
+  crosses the VPS and WireGuard to IPP/Immich as part of a live request, so a
+  compromised VPS can read it in transit; a key alone remains insufficient
+  without its password. IPP also redacts keys from application logs. The NAS
+  nginx logs retain only method + normalized path and never the query string;
+  its error log is disabled because nginx error entries can echo raw queries.
 - **The Immich API key never goes to the VPS.** It is used only by the controller to call Immich. A separate controller must use HTTPS to Immich, loopback, or explicitly confirm that clear-text HTTP is carried inside a private encrypted tunnel.
 - **The real weak point is the link itself** (a friend forwarding it). Hence: always a password, short TTL, and the two-channel rule (link one way, password another).
 
@@ -145,10 +152,14 @@ not throttled. Caddy does not otherwise perform fair bandwidth sharing: without
 this guard, concurrent TCP streams simply compete for the available link.
 
 ZIP responses pass through the same guard at 2 MiB/s, with exactly one active
-ZIP globally. A concurrent request receives HTTP 429, `Retry-After: 30`, and a
-small internal HTML page; there is deliberately no persistent queue. Oversized
-archives receive 413, while an insufficient disk reserve receives 507. These
-pages contain no share, visitor, size, progress, or throughput information.
+ZIP lifecycle globally. The gallery shows an English progress dialog while the
+archive is fetched and finalized, then exposes an explicit download button with
+the exact size. Up to three additional visitors wait in a process-local FIFO;
+closing the dialog keeps the request queued, while **Leave queue** cancels it.
+The fourth waiting request receives HTTP 429 and `Retry-After: 30`. The queue is
+intentionally ephemeral and is cleared by an IPP restart. Oversized archives
+receive 413, while an insufficient disk reserve receives 507; neither response
+reveals visitor, share, progress, or throughput information.
 
 ### Small-VPS resource profile
 
@@ -177,7 +188,9 @@ and while monitoring both hosts; the detailed procedure is in `SETUP.md`.
 
 ## License
 
-See [`LICENSE`](LICENSE). This is your original code; `immich-public-proxy` (AGPL-3.0) is a separate program you run alongside it, not linked into this code.
+Original orchestration code is MIT under [`LICENSE`](LICENSE). The separately
+maintained IPP fork and historical derived patch material are AGPL-3.0-only;
+see [`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md) for the exact boundary.
 
 ## Credits
 

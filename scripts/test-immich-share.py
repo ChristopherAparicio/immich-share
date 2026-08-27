@@ -2,6 +2,8 @@
 import configparser
 import importlib.machinery
 import importlib.util
+import json
+import re
 import tempfile
 import unittest
 from datetime import datetime, timedelta, timezone
@@ -184,6 +186,42 @@ class OwnershipTests(unittest.TestCase):
         self.assertEqual(self.state.keys(), set())
         self.assertIn("new_share_key_1234.caddy", edge.removed)
         self.assertEqual(edge.forward, [True, False])
+
+    def test_share_snippet_exposes_only_bounded_zip_queue_routes(self):
+        rendered = module.render_share_snippet(
+            FakeEdge(), "managed_key_1234", "album", "2026-08-27T00:00:00Z"
+        )
+
+        self.assertIn("/share/managed_key_1234/download/prepare", rendered)
+        self.assertIn(
+            "^/share/managed_key_1234/download/jobs/[A-Za-z0-9_-]{24}/file/?$",
+            rendered,
+        )
+        self.assertIn("method GET DELETE", rendered)
+        self.assertNotIn("\tpath /share/managed_key_1234/*", rendered)
+
+
+class DeploymentBoundaryTests(unittest.TestCase):
+    def test_ipp_uses_external_agpl_image_pinned_by_digest(self):
+        compose = (ROOT / "vps" / "docker-compose.yml").read_text()
+        self.assertRegex(
+            compose,
+            re.compile(
+                r"image: ghcr\.io/christopheraparicio/immich-public-proxy:"
+                r"3\.2\.1-immich-share\.3@sha256:[0-9a-f]{64}"
+            ),
+        )
+        self.assertFalse((ROOT / "vps" / "Dockerfile.ipp").exists())
+        self.assertFalse((ROOT / "vps" / "patch-ipp-download-limit.mjs").exists())
+        self.assertIn(
+            "AGPL-3.0-only",
+            (ROOT / "THIRD_PARTY_NOTICES.md").read_text(),
+        )
+
+    def test_zip_retry_has_an_absolute_deadline(self):
+        config = json.loads((ROOT / "vps" / "ipp-config.json").read_text())
+        self.assertEqual(config["ipp"]["downloadZipReadyLeaseSeconds"], 120)
+        self.assertEqual(config["ipp"]["downloadZipMaxReadyLeaseSeconds"], 300)
 
 
 if __name__ == "__main__":
