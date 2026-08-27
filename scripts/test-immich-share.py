@@ -231,6 +231,16 @@ class DeploymentBoundaryTests(unittest.TestCase):
         self.assertEqual(config["ipp"]["downloadZipReadyLeaseSeconds"], 120)
         self.assertEqual(config["ipp"]["downloadZipMaxReadyLeaseSeconds"], 300)
 
+    def test_nas_logs_never_include_the_raw_request_or_query(self):
+        config = (ROOT / "nas" / "nginx-filter.conf").read_text()
+        log_format = "\n".join(
+            line for line in config.splitlines() if "log_format" in line or "status=" in line
+        )
+        self.assertIn('"$request_method $uri"', log_format)
+        self.assertNotIn("$request_uri", log_format)
+        self.assertNotIn("$request ", log_format)
+        self.assertIn("error_log /dev/null", config)
+
 
 if __name__ == "__main__":
     unittest.main()

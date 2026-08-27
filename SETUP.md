@@ -134,6 +134,11 @@ values; replace the `<WG_...>` placeholders only in deployed copies.
    0750 and grant the
    tripwire account read access without making it world-readable. Inside the
    tunnel container, verify `sysctl net.ipv4.ip_forward` returns `0`.
+   When replacing an existing bind-mounted `nginx-filter.conf` atomically,
+   recreate only the filter with
+   `docker compose up -d --no-deps --force-recreate nginx-filter`; an nginx
+   reload can otherwise keep reading the previous bind-mounted inode. Repeat
+   the query-sentinel log test after every filter update.
 4. Import `macmini/wg0-macmini.conf` on the admin machine and apply
    `macmini/pf-wireguard.md`.
 5. From the NAS and admin machine, verify `ping <WG_VPS_ADDRESS>`. Inspect handshakes
