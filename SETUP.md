@@ -22,8 +22,8 @@ change, and never ask the operator to paste a private key or API key into chat.
 
 Recommended defaults for a small VPS are already included in the repository:
 2 GiB maximum ZIP contents, a 5 GiB disk reserve, a 30-minute cache, one active
-ZIP, and 2 MiB/s per ZIP. The installer must adjust them when the VPS disk or
-home upload is smaller.
+ZIP lifecycle plus three waiting visitors, and 2 MiB/s per ZIP. The installer
+must adjust them when the VPS disk or home upload is smaller.
 
 The repository currently provides an operations CLI, not an interactive
 installer. Deployment therefore follows this runbook and copies
@@ -233,9 +233,7 @@ Copy these repository files to `/srv/photo-share/`:
 ```text
 vps/docker-compose.yml
 vps/Dockerfile.caddy
-vps/Dockerfile.ipp
 vps/Dockerfile.nginx
-vps/patch-ipp-download-limit.mjs
 vps/Caddyfile
 vps/ipp-config.json
 vps/download-guard.conf.template
@@ -259,15 +257,17 @@ After a routing change, run `./immich-share sync` on the admin machine. It
 regenerates snippets only for links recorded in the local managed-share state;
 it never publishes an unrelated Immich link.
 
-Images and upstream versions are pinned. Updating IPP is an explicit operation:
-change the digest, rebuild, validate the patch markers, and retest ZIP responses
-for 200, 206, 413, 429, and 507.
+Images and upstream versions are pinned. IPP source and releases live in the
+separate AGPL fork linked from `THIRD_PARTY_NOTICES.md`. Updating IPP is an
+explicit operation: validate the fork release, change the immutable GHCR
+digest, and retest ZIP responses for 200, 206, 413, 429, and 507.
 
 ### Download limits and resumable ZIPs
 
-Caddy sends only individual originals and `/share/<key>/download` to the nginx
-download guard. Gallery HTML, thumbnails, preview zoom, and metadata go directly
-to IPP and are not throttled.
+Caddy sends only individual originals, the legacy `/share/<key>/download`
+endpoint, and prepared `/share/<key>/download/jobs/<id>/file` responses to the
+nginx download guard. Gallery HTML, thumbnails, preview zoom, metadata, and the
+bounded queue-control endpoints go directly to IPP and are not throttled.
 
 The HTTPS listener uses HTTP/1.1 and HTTP/2. Long ZIP downloads were observed to
 be unreliable in Safari iOS over HTTP/3, while TCP-based HTTP/2 completed and
@@ -279,7 +279,7 @@ Small-VPS defaults in `vps/.env.example`:
 - `DOWNLOAD_PER_IP=2`: two active individual downloads per client address.
 - `DOWNLOAD_GLOBAL=6`: six active individual downloads globally.
 - `DOWNLOAD_LIMIT_DRY_RUN=off`: excess requests receive HTTP 429.
-- `ZIP_GLOBAL=1`: one active ZIP request, with no persistent queue.
+- `ZIP_GLOBAL=1`: hard nginx backstop allowing one active ZIP transfer.
 - `ZIP_RATE=2m`: 2 MiB/s per ZIP after the first MiB.
 
 ZIP defaults in `vps/ipp-config.json`:
@@ -288,6 +288,13 @@ ZIP defaults in `vps/ipp-config.json`:
 - `minDownloadZipFreeBytes`: disk reserve, 5 GiB by default.
 - `downloadZipCacheTtlSeconds`: private cache lifetime, 1,800 seconds.
 - `downloadFromImmichConcurrencyLimit`: three simultaneous source fetches.
+- `downloadZipQueueMaxWaiting`: three waiting visitors in the process-local FIFO.
+- `downloadZipQueueHeartbeatSeconds`: remove a waiting job after five minutes
+  without status polling.
+- `downloadZipReadyLeaseSeconds`: reserve a prepared ZIP for two minutes while
+  the visitor starts the download.
+- `downloadZipMaxReadyLeaseSeconds`: absolute five-minute ceiling for the
+  ready/retry lifecycle; HEAD and Range probes cannot extend it.
 
 IPP stages originals on disk, creates an immutable STORE archive, and only then
 sends headers with exact `Content-Length` and `Accept-Ranges: bytes`. A canceled
@@ -295,10 +302,12 @@ mobile download can resume while the private cache remains valid. Startup and
 TTL cleanup remove stale files. The disk preflight accounts for staged originals,
 the final archive, and the configured reserve.
 
-One global ZIP protects a small VPS. A concurrent request receives HTTP 429 and
-`Retry-After: 30`; oversized content receives 413; insufficient staging space
-receives 507. Public error pages reveal no visitor, share, size, progress, or
-throughput information.
+One active ZIP lifecycle protects a small VPS. Additional visitors enter a
+bounded in-memory FIFO and see position-independent English status text; the
+queue does not survive an IPP restart and stores no database records. A request
+beyond the configured waiting capacity receives HTTP 429 and `Retry-After: 30`;
+oversized content receives 413 and insufficient staging space receives 507.
+Public responses reveal no other visitor, share, throughput, or time estimate.
 
 Theoretical individual-download throughput is
 `DOWNLOAD_RATE × DOWNLOAD_GLOBAL`. Leave 20–25% headroom below measured NAS
@@ -400,7 +409,8 @@ From an external connection such as cellular data:
 - [ ] A wrong password reveals no thumbnail or metadata.
 - [ ] An expired link is inaccessible.
 - [ ] Individual original download works.
-- [ ] Bulk ZIP works and a concurrent ZIP request receives 429.
+- [ ] Bulk ZIP works, a concurrent visitor is queued, and a request beyond the
+      queue capacity receives 429.
 - [ ] A canceled ZIP resumes with HTTP 206 while its cache is valid.
 - [ ] ZIP staging contains no source directories after success, error, or cancel.
 - [ ] The gallery reveals no GPS/EXIF fields.

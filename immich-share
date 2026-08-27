@@ -75,11 +75,37 @@ handle @dl_{key} {{
 \tpath /share/{key}/download
 }}
 handle @zip_{key} {{
-\t# One global ZIP: the guard returns 429 with a static page when busy.
+\t# Legacy/fallback ZIP route. The queue UI uses the job-specific route below.
 \treverse_proxy {download_upstream} {{
 \t\theader_up X-Client-IP {{remote_host}}
 \t\theader_up X-Download-Guard caddy-internal-v1
 \t}}
+}}
+@zip_file_{key} {{
+\tmethod GET HEAD
+\tpath_regexp ^/share/{key}/download/jobs/[A-Za-z0-9_-]{{24}}/file/?$
+}}
+handle @zip_file_{key} {{
+\t# The application queue owns the lifecycle; nginx remains the hard global
+\t# transfer and bandwidth guard.
+\treverse_proxy {download_upstream} {{
+\t\theader_up X-Client-IP {{remote_host}}
+\t\theader_up X-Download-Guard caddy-internal-v1
+\t}}
+}}
+@zip_prepare_{key} {{
+\tmethod POST
+\tpath /share/{key}/download/prepare
+}}
+handle @zip_prepare_{key} {{
+\treverse_proxy {upstream}
+}}
+@zip_job_{key} {{
+\tmethod GET DELETE
+\tpath_regexp ^/share/{key}/download/jobs/[A-Za-z0-9_-]{{24}}/?$
+}}
+handle @zip_job_{key} {{
+\treverse_proxy {upstream}
 }}
 @s_{key} {{
 \t# No /share/{key}/* wildcard: only explicit routes are public.

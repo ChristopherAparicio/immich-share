@@ -38,6 +38,18 @@
 			events 10
 			window 1m
 		}
+		# Queue preparation/status polling is authenticated by the share session.
+		# Two-second polling needs a separate, higher bounded allowance.
+		zone share_zip_queue {
+			match {
+				method GET POST DELETE
+				path /share/*/download/prepare /share/*/download/jobs/*
+			}
+			key {remote_host}
+			ipv6_prefix 64
+			events 120
+			window 1m
+		}
 	}
 
 	# Browser defenses: strict TLS, no framing, and no share-key leakage in Referer.
@@ -53,15 +65,22 @@
 	# One generated file per active share. An empty directory exposes no handler.
 	import /etc/caddy/shares.d/*.caddy
 
-	# This log contains /share/<key>, which is a credential component. Keep it
-	# only on the disposable VPS with short retention. Home-side telemetry ingests
-	# it continuously. A key remains insufficient without the share password.
+	# Keep short-lived request telemetry without recording credential-bearing
+	# share keys or secret query values. Home-side telemetry ingests this file.
 	log {
 		output file /data/access.log {
 			mode 0600
 			roll_size 5mb
 			roll_keep 1
 			roll_keep_for 24h
+		}
+		format filter {
+			request>uri query {
+				replace key REDACTED
+				replace password REDACTED
+				replace token REDACTED
+			}
+			request>uri regexp "^(/(?:share|s)/(?:photo/|video/|meta/)?)[^/?]+" "${1}REDACTED"
 		}
 	}
 

@@ -1,0 +1,77 @@
+name: CI
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      NAS_WG_ADDRESS: 192.0.2.10
+      PUBLIC_DOMAIN: photos.example.com
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Scan committed changes for secrets
+        uses: gitleaks/gitleaks-action@ff98106e4c7b2bc287b24eaf42907196329070c7 # v2.3.9
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Validate Python and public tree
+        run: |
+          python3 -m py_compile \
+            immich-share \
+            macmini/photo-share-monitor.py \
+            scripts/benchmark-downloads.py
+          python3 scripts/test-immich-share.py
+          python3 scripts/check-public-tree.py
+
+      - name: Validate Compose and build edge images
+        run: |
+          mkdir -p vps/shares.d
+          docker compose -f vps/docker-compose.yml config --quiet
+          docker compose -f vps/docker-compose.yml build caddy download-guard
+
+      - name: Validate Caddy and nginx
+        run: |
+          docker compose -f vps/docker-compose.yml run --rm --no-deps \
+            caddy caddy validate --config /etc/caddy/Caddyfile
+          docker run --rm --add-host ipp:127.0.0.1 \
+            -e 'NGINX_ENVSUBST_FILTER=^(DOWNLOAD_|ZIP_|IPP_UPSTREAM$)' \
+            -e IPP_UPSTREAM=ipp:3000 \
+            -e DOWNLOAD_RATE=2m \
+            -e DOWNLOAD_RATE_AFTER=1m \
+            -e DOWNLOAD_PER_IP=2 \
+            -e DOWNLOAD_GLOBAL=6 \
+            -e DOWNLOAD_LIMIT_DRY_RUN=off \
+            -e ZIP_RATE=2m \
+            -e ZIP_RATE_AFTER=1m \
+            -e ZIP_GLOBAL=1 \
+            -v "$PWD/vps/download-guard-nginx.conf:/etc/nginx/nginx.conf:ro" \
+            -v "$PWD/vps/download-guard.conf.template:/etc/nginx/templates/default.conf.template:ro" \
+            immich-share-nginx:1.31.4-hardened nginx -t
+
+      - name: Run immutable IPP ZIP E2E
+        run: |
+          ipp_image=$(docker compose -f vps/docker-compose.yml config --images | grep '^ghcr.io/.*immich-public-proxy')
+          docker pull "$ipp_image"
+          docker run --rm --init --user 1000:1000 \
+            -e IMMICH_URL=http://127.0.0.1:3101 \
+            -e PUBLIC_BASE_URL=http://127.0.0.1:3102 \
+            -e IPP_PORT=3102 \
+            -v "$PWD/scripts/test-ipp-zip-queue-e2e.mjs:/test-ipp-zip-queue-e2e.mjs:ro" \
+            -v "$PWD/scripts/fixtures/ipp-zip-limit.json:/app/config.json:ro" \
+            "$ipp_image" node /test-ipp-zip-queue-e2e.mjs
