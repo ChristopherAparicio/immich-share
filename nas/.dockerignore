@@ -1,0 +1,8 @@
+# Closed by default: deployed directories also contain wg0-nas.conf, .env,
+# logs, incoming artifacts, and private backups.
+*
+!Dockerfile.wireguard
+!Dockerfile.nginx
+!Dockerfile.logrotate
+!wireguard-entrypoint.sh
+!logrotate-entrypoint.sh
