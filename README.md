@@ -43,7 +43,7 @@
 
 **Third-party and separately licensed components:**
 - [Immich](https://immich.app) — your photo library (the source of truth)
-- [`immich-public-proxy`](https://github.com/ChristopherAparicio/immich-public-proxy) — our separately maintained, security-focused fork of the stateless public gallery (AGPL-3.0)
+- [`immich-public-proxy`](https://github.com/ChristopherAparicio/immich-public-proxy) — our separately maintained, security-focused fork of the stateless public gallery, with resumable ZIPs and deterministic multipart downloads (AGPL-3.0)
 - [Caddy](https://caddyserver.com) + [`caddy-ratelimit`](https://github.com/mholt/caddy-ratelimit) — TLS + rate limiting
 - [WireGuard](https://www.wireguard.com) — the home↔VPS tunnel
 

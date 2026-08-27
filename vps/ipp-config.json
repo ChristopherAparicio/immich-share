@@ -12,6 +12,14 @@
 		"downloadZipQueueHeartbeatSeconds": 300,
 		"downloadZipReadyLeaseSeconds": 120,
 		"downloadZipMaxReadyLeaseSeconds": 300,
+		"downloadZipDiskBudgetPercent": 50,
+		"downloadZipSplitThresholdBytes": 1073741824,
+		"downloadZipPartTargetBytes": 536870912,
+		"downloadZipPlanConcurrency": 12,
+		"downloadZipPlanTtlSeconds": 3600,
+		"downloadZipPlanMaxAssets": 5000,
+		"downloadZipMaxParts": 64,
+		"downloadZipMaxParallelDownloads": 3,
 		"showMetadata": {
 			"exif": {},
 			"location": {}

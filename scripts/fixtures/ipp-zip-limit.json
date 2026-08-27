@@ -4,6 +4,14 @@
     "downloadFromImmichConcurrencyLimit": 2,
     "maxDownloadZipBytes": 1048576,
     "minDownloadZipFreeBytes": 0,
-    "downloadZipCacheTtlSeconds": 60
+    "downloadZipCacheTtlSeconds": 60,
+    "downloadZipSplitThresholdBytes": 204800,
+    "downloadZipPartTargetBytes": 204800,
+    "downloadZipPlanConcurrency": 2,
+    "downloadZipPlanTtlSeconds": 300,
+    "downloadZipPlanMaxAssets": 8,
+    "downloadZipMaxParts": 8,
+    "downloadZipMaxParallelDownloads": 1,
+    "downloadZipDiskBudgetPercent": 50
   }
 }
