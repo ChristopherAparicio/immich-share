@@ -286,6 +286,15 @@ class DeploymentBoundaryTests(unittest.TestCase):
             contents = (ROOT / "nas" / filename).read_text()
             self.assertIn("apk upgrade --no-cache", contents, filename)
 
+    def test_docker_build_contexts_are_closed_by_default(self):
+        for directory in ("nas", "vps"):
+            patterns = (ROOT / directory / ".dockerignore").read_text().splitlines()
+            effective = [line for line in patterns if line and not line.startswith("#")]
+            self.assertEqual(effective[0], "*", directory)
+            self.assertFalse(any(".env" in line and line.startswith("!") for line in effective))
+            self.assertFalse(any("backup" in line and line.startswith("!") for line in effective))
+            self.assertFalse(any("wg0" in line and line.startswith("!") for line in effective))
+
     def test_immich_network_override_attaches_only_the_server(self):
         override = (ROOT / "nas" / "immich-network.override.yml").read_text()
         self.assertIn("  immich-server:", override)
