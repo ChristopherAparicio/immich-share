@@ -24,7 +24,7 @@ wg_hardening=$(docker inspect --format \
     '{{.HostConfig.ReadonlyRootfs}}|{{json .HostConfig.CapDrop}}|{{json .HostConfig.CapAdd}}|{{json .HostConfig.SecurityOpt}}' \
     "$wg_container" 2>/dev/null || true)
 case "$wg_hardening" in
-    true\|\[\"ALL\"\]\|\[\"NET_ADMIN\"\]\|*no-new-privileges*) ;;
+    true\|\[\"ALL\"\]\|\[\"NET_ADMIN\",\"DAC_READ_SEARCH\"\]\|*no-new-privileges*) ;;
     *) fail "WireGuard hardening is incomplete" ;;
 esac
 
@@ -68,16 +68,19 @@ esac
     || fail "filter is stopped; run doctor during a controlled test share"
 effective=$(docker exec "$filter_container" nginx -T 2>/dev/null) \
     || fail "effective nginx configuration cannot be read"
-printf '%s\n' "$effective" | grep -F 'error_log /dev/null' >/dev/null \
+# nginx -T includes source comments. Inspect directives only so a defensive
+# comment such as "Never log $request" cannot make the doctor fail closed.
+effective_directives=$(printf '%s\n' "$effective" | sed '/^[[:space:]]*#/d')
+printf '%s\n' "$effective_directives" | grep -F 'error_log /dev/null' >/dev/null \
     || fail "nginx error logging is not disabled"
-if printf '%s\n' "$effective" | grep -F '$request_uri' >/dev/null \
-    || printf '%s\n' "$effective" | grep -F '$request ' >/dev/null; then
+if printf '%s\n' "$effective_directives" | grep -F '$request_uri' >/dev/null \
+    || printf '%s\n' "$effective_directives" | grep -F '$request ' >/dev/null; then
     fail "nginx route logs include the raw request target"
 fi
-printf '%s\n' "$effective" | grep -F '"$request_method $uri"' >/dev/null \
+printf '%s\n' "$effective_directives" | grep -F '"$request_method $uri"' >/dev/null \
     || fail "nginx sanitized route log format is missing"
 
-listen_address=$(printf '%s\n' "$effective" \
+listen_address=$(printf '%s\n' "$effective_directives" \
     | sed -n 's/^[[:space:]]*listen[[:space:]]\+\([^:;]*\):2283.*/\1/p' | head -1)
 [ -n "$listen_address" ] || fail "filter listener cannot be identified"
 sentinel="DOCTORQUERY$$"

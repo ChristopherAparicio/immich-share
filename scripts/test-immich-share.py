@@ -286,6 +286,18 @@ class DeploymentBoundaryTests(unittest.TestCase):
             contents = (ROOT / "nas" / filename).read_text()
             self.assertIn("apk upgrade --no-cache", contents, filename)
 
+    def test_wireguard_can_read_only_the_private_bind_mount(self):
+        compose = (ROOT / "nas" / "docker-compose.yml").read_text()
+        wireguard = compose.split("  nginx-filter:", 1)[0]
+        self.assertIn("- NET_ADMIN", wireguard)
+        self.assertIn("- DAC_READ_SEARCH", wireguard)
+        self.assertIn("cap_drop:\n      - ALL", wireguard)
+        self.assertIn("./wg0-nas.conf:/config/wg0.conf:ro", wireguard)
+        self.assertNotIn("DAC_OVERRIDE", wireguard)
+        doctor = (ROOT / "nas" / "security-doctor.sh").read_text()
+        self.assertIn(r'\[\"NET_ADMIN\",\"DAC_READ_SEARCH\"\]', doctor)
+        self.assertIn("sed '/^[[:space:]]*#/d'", doctor)
+
     def test_docker_build_contexts_are_closed_by_default(self):
         for directory in ("nas", "vps"):
             patterns = (ROOT / directory / ".dockerignore").read_text().splitlines()
