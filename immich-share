@@ -108,6 +108,13 @@ handle @zip_file_{key} {{
 handle @zip_prepare_{key} {{
 \treverse_proxy {upstream}
 }}
+@zip_plan_{key} {{
+\tmethod POST
+\tpath /share/{key}/download/plan
+}}
+handle @zip_plan_{key} {{
+\treverse_proxy {upstream}
+}}
 @zip_job_{key} {{
 \tmethod GET DELETE
 \tpath_regexp ^/share/{key}/download/jobs/[A-Za-z0-9_-]{{24}}/?$

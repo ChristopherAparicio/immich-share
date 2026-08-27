@@ -274,7 +274,8 @@ digest, and retest ZIP responses for 200, 206, 413, 429, and 507.
 Caddy sends only individual originals, the legacy `/share/<key>/download`
 endpoint, and prepared `/share/<key>/download/jobs/<id>/file` responses to the
 nginx download guard. Gallery HTML, thumbnails, preview zoom, metadata, and the
-bounded queue-control endpoints go directly to IPP and are not throttled.
+bounded queue-control endpoints go directly to IPP. Caddy rate-limits the
+planning endpoint separately because it performs bounded upstream header reads.
 
 The HTTPS listener uses HTTP/1.1 and HTTP/2. Long ZIP downloads were observed to
 be unreliable in Safari iOS over HTTP/3, while TCP-based HTTP/2 completed and
@@ -286,8 +287,14 @@ Small-VPS defaults in `vps/.env.example`:
 - `DOWNLOAD_PER_IP=2`: two active individual downloads per client address.
 - `DOWNLOAD_GLOBAL=6`: six active individual downloads globally.
 - `DOWNLOAD_LIMIT_DRY_RUN=off`: excess requests receive HTTP 429.
-- `ZIP_GLOBAL=1`: hard nginx backstop allowing one active ZIP transfer.
+- `ZIP_GLOBAL=3`: hard nginx backstop allowing three prepared ZIP transfers.
 - `ZIP_RATE=2m`: 2 MiB/s per ZIP after the first MiB.
+- `ZIP_MAX_PARALLEL_DOWNLOADS=3`: matching IPP ready/transfer slot ceiling.
+- `ZIP_DISK_BUDGET_PERCENT=50`: staged files plus the STORE archive may use at
+  most half of the free space remaining after the fixed reserve.
+- `ZIP_SPLIT_THRESHOLD_BYTES=1073741824`: albums above 1 GiB show a part picker.
+- `ZIP_PART_TARGET_BYTES=536870912`: deterministic parts target 512 MiB.
+- `ZIP_PLAN_CONCURRENCY=12`: bounded concurrent size-header checks.
 
 ZIP defaults in `vps/ipp-config.json`:
 
@@ -295,6 +302,10 @@ ZIP defaults in `vps/ipp-config.json`:
 - `minDownloadZipFreeBytes`: disk reserve, 5 GiB by default.
 - `downloadZipCacheTtlSeconds`: private cache lifetime, 1,800 seconds.
 - `downloadFromImmichConcurrencyLimit`: three simultaneous source fetches.
+- `downloadZipPlanTtlSeconds`: visitor-bound part plans expire after one hour.
+- `downloadZipPlanMaxAssets`: reject plans above 5,000 unique assets before
+  issuing any upstream size requests.
+- `downloadZipMaxParts`: reject plans needing more than 64 parts.
 - `downloadZipQueueMaxWaiting`: three waiting visitors in the process-local FIFO.
 - `downloadZipQueueHeartbeatSeconds`: remove a waiting job after five minutes
   without status polling.
@@ -303,11 +314,14 @@ ZIP defaults in `vps/ipp-config.json`:
 - `downloadZipMaxReadyLeaseSeconds`: absolute five-minute ceiling for the
   ready/retry lifecycle; HEAD and Range probes cannot extend it.
 
-IPP stages originals on disk, creates an immutable STORE archive, and only then
-sends headers with exact `Content-Length` and `Accept-Ranges: bytes`. A canceled
-mobile download can resume while the private cache remains valid. Startup and
-TTL cleanup remove stale files. The disk preflight accounts for staged originals,
-the final archive, and the configured reserve.
+IPP first reads the selected endpoints' exact sizes. Albums at or below the
+threshold proceed automatically; larger albums are split by stable capture-time
+order and the visitor chooses an independent part. IPP stages one part at a
+time, creates an immutable STORE archive, and only then sends headers with exact
+`Content-Length` and `Accept-Ranges: bytes`. A canceled mobile download can
+resume while the private cache remains valid. Startup and TTL cleanup remove
+stale files. The disk preflight accounts for staged originals, the final
+archive, the fixed reserve, and the percentage budget.
 
 One active ZIP lifecycle protects a small VPS. Additional visitors enter a
 bounded in-memory FIFO and see position-independent English status text; the

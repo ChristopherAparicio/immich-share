@@ -50,6 +50,18 @@
 			events 120
 			window 1m
 		}
+		# Planning performs bounded header requests against Immich. Keep it on a
+		# deliberately smaller per-client budget than inexpensive status polls.
+		zone share_zip_plan {
+			match {
+				method POST
+				path /share/*/download/plan
+			}
+			key {remote_host}
+			ipv6_prefix 64
+			events 6
+			window 1m
+		}
 	}
 
 	# Browser defenses: strict TLS, no framing, and no share-key leakage in Referer.

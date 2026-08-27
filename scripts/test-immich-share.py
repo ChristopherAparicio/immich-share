@@ -226,6 +226,7 @@ class OwnershipTests(unittest.TestCase):
         )
 
         self.assertIn("/share/managed_key_1234/download/prepare", rendered)
+        self.assertIn("/share/managed_key_1234/download/plan", rendered)
         self.assertIn(
             f"log_append share_ref {hashlib.sha256(b'managed_key_1234').hexdigest()[:16]}",
             rendered,
@@ -248,7 +249,7 @@ class DeploymentBoundaryTests(unittest.TestCase):
             compose,
             re.compile(
                 r"image: ghcr\.io/christopheraparicio/immich-public-proxy:"
-                r"3\.2\.1-immich-share\.4@sha256:[0-9a-f]{64}"
+                r"3\.2\.1-immich-share\.5@sha256:[0-9a-f]{64}"
             ),
         )
         self.assertFalse((ROOT / "vps" / "Dockerfile.ipp").exists())
@@ -262,6 +263,18 @@ class DeploymentBoundaryTests(unittest.TestCase):
         config = json.loads((ROOT / "vps" / "ipp-config.json").read_text())
         self.assertEqual(config["ipp"]["downloadZipReadyLeaseSeconds"], 120)
         self.assertEqual(config["ipp"]["downloadZipMaxReadyLeaseSeconds"], 300)
+
+    def test_zip_resource_budget_and_parallel_backstops_are_aligned(self):
+        config = json.loads((ROOT / "vps" / "ipp-config.json").read_text())["ipp"]
+        compose = (ROOT / "vps" / "docker-compose.yml").read_text()
+        caddy = (ROOT / "vps" / "Caddyfile").read_text()
+        self.assertEqual(config["downloadZipDiskBudgetPercent"], 50)
+        self.assertEqual(config["downloadZipMaxParallelDownloads"], 3)
+        self.assertIn("IPP_ZIP_DISK_BUDGET_PERCENT=${ZIP_DISK_BUDGET_PERCENT:-50}", compose)
+        self.assertIn("IPP_ZIP_MAX_PARALLEL_DOWNLOADS=${ZIP_MAX_PARALLEL_DOWNLOADS:-3}", compose)
+        self.assertIn("ZIP_GLOBAL: ${ZIP_GLOBAL:-3}", compose)
+        self.assertIn("path /share/*/download/plan", caddy)
+        self.assertIn("events 6", caddy)
 
     def test_nas_logs_never_include_the_raw_request_or_query(self):
         config = (ROOT / "nas" / "nginx-filter.conf").read_text()

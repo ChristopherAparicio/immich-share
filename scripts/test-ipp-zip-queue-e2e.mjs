@@ -67,7 +67,7 @@ function csrfFrom (cookie) {
   return pair ? decodeURIComponent(pair.slice('ipp-csrf='.length)) : ''
 }
 
-async function prepare (cookie = '') {
+async function openSession (cookie = '') {
   if (!cookie) {
     const gallery = await fetch(`http://127.0.0.1:${ippPort}/share/${shareKey}`, {
       headers: tlsProxyHeaders
@@ -75,6 +75,27 @@ async function prepare (cookie = '') {
     if (!gallery.ok) throw new Error(`gallery returned ${gallery.status}`)
     cookie = mergeCookies('', gallery)
   }
+  return cookie
+}
+
+async function plan (cookie = '') {
+  cookie = await openSession(cookie)
+  const csrf = csrfFrom(cookie)
+  if (!csrf) throw new Error('gallery did not issue a CSRF cookie')
+  const response = await fetch(`http://127.0.0.1:${ippPort}/share/${shareKey}/download/plan`, {
+    method: 'POST',
+    headers: {
+      ...tlsProxyHeaders,
+      'X-IPP-CSRF-Token': csrf,
+      Cookie: cookie
+    }
+  })
+  if (!response.ok) throw new Error(`plan returned ${response.status}: ${await response.text()}`)
+  return { plan: await response.json(), cookie: mergeCookies(cookie, response) }
+}
+
+async function prepare (cookie = '', body = {}) {
+  cookie = await openSession(cookie)
   const csrf = csrfFrom(cookie)
   if (!csrf) throw new Error('gallery did not issue a CSRF cookie')
   const response = await fetch(`http://127.0.0.1:${ippPort}/share/${shareKey}/download/prepare`, {
@@ -85,7 +106,7 @@ async function prepare (cookie = '') {
       'X-IPP-CSRF-Token': csrf,
       ...(cookie ? { Cookie: cookie } : {})
     },
-    body: '{}'
+    body: JSON.stringify(body)
   })
   if (response.status !== 202) throw new Error(`prepare returned ${response.status}: ${await response.text()}`)
   return { job: await response.json(), cookie: mergeCookies(cookie, response) }
@@ -120,10 +141,25 @@ await new Promise(resolve => setTimeout(resolve, 150))
 
 let exitCode = 0
 try {
-  const first = await prepare()
+  const planned = await plan()
+  if (!planned.plan.requiresSplit || planned.plan.parts.length !== 3) {
+    throw new Error(`expected deterministic 3-part plan, got ${JSON.stringify(planned.plan.parts)}`)
+  }
+  if (planned.plan.parts.some((part, index) => part.index !== index + 1 || part.assetCount !== 1 || part.sizeBytes !== 128 * 1024)) {
+    throw new Error(`invalid part boundaries: ${JSON.stringify(planned.plan.parts)}`)
+  }
+
+  const unrelatedSession = await openSession()
+  const stolenPlan = await prepare(unrelatedSession, { planId: planned.plan.id, part: 1 }).catch(error => error)
+  if (!(stolenPlan instanceof Error) || !String(stolenPlan.message).includes('404')) {
+    throw new Error('another visitor could use an opaque ZIP plan')
+  }
+
+  const first = await prepare(planned.cookie, { planId: planned.plan.id, part: 1 })
   if (!first.cookie) throw new Error('first visitor did not receive a queue-session cookie')
   const ready = await waitFor(first.job, first.cookie, 'ready')
   if (!Number.isSafeInteger(ready.sizeBytes) || ready.sizeBytes <= 0) throw new Error('ready job has no ZIP size')
+  if (ready.partIndex !== 1 || ready.partCount !== 3) throw new Error('job status lost multipart metadata')
 
   const sameVisitor = await fetch(`http://127.0.0.1:${ippPort}/share/${shareKey}/download/prepare`, {
     method: 'POST',
@@ -133,7 +169,7 @@ try {
       Cookie: first.cookie,
       'X-IPP-CSRF-Token': csrfFrom(first.cookie)
     },
-    body: JSON.stringify({ assets: assets.slice(0, 2).map(asset => asset.id) })
+    body: JSON.stringify({ planId: planned.plan.id, part: 2 })
   })
   if (sameVisitor.status !== 429) {
     throw new Error(`same visitor created a second job: status=${sameVisitor.status}`)
@@ -153,6 +189,9 @@ try {
   }
   if (firstFile.headers.get('content-length') !== String(firstBody.length)) {
     throw new Error('first ZIP has no exact Content-Length')
+  }
+  if (!decodeURIComponent(firstFile.headers.get('content-disposition') || '').includes('part 1 of 3')) {
+    throw new Error('multipart ZIP filename has no part suffix')
   }
 
   await waitFor(second.job, second.cookie, 'ready')
@@ -178,7 +217,7 @@ try {
   )
   if (leave.status !== 204) throw new Error(`leave queue returned ${leave.status}`)
 
-  console.log(`IPP ZIP queue E2E passed: queued -> ready, bytes=${firstBody.length}, range=100`)
+  console.log(`IPP ZIP queue E2E passed: planned 3 parts, isolated plan, queued -> ready, bytes=${firstBody.length}, range=100`)
 } catch (error) {
   exitCode = 1
   console.error(error)
