@@ -236,6 +236,11 @@ def _human_delta(td):
 
 # Actual IPP routes observed on 2026-08-25: the size segment conveys intent.
 _SIZE_ACTION = {"thumbnail": "thumb", "preview": "view", "original": "download"}
+_LOG_ACTIONS = {"gallery", "view", "download", "thumb"}
+
+
+def _share_ref(key):
+    return hashlib.sha256(key.encode()).hexdigest()[:16]
 
 
 def _classify(method, uri):
@@ -295,6 +300,7 @@ def _ingest_once():
 
     last_ts = float(_meta_get("last_event_ts", 0) or 0)
     shares = {s["key"]: s for s in (_immich_shares() or [])}
+    share_refs = {_share_ref(key): key for key in shares}
     rows, maxts = [], last_ts
     for line in log.splitlines():
         try:
@@ -311,7 +317,11 @@ def _ingest_once():
         if status == 429:  # Rate limited; possible password brute force.
             rows.append((ts, "", ip, "ratelimit", 429))
             continue
-        key, action = _classify(req.get("method", ""), req.get("uri", ""))
+        key = share_refs.get(e.get("share_ref"))
+        action = e.get("share_action")
+        if not key or action not in _LOG_ACTIONS:
+            # Historical entries created before full URI redaction used the path.
+            key, action = _classify(req.get("method", ""), req.get("uri", ""))
         if not key or status not in (200, 206):
             continue
         rows.append((ts, key, ip, action, status))
