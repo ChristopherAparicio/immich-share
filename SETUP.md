@@ -107,26 +107,21 @@ values; replace the `<WG_...>` placeholders only in deployed copies.
 3. Create a dedicated external Docker network named `immich_share`. Persistently
    attach only `immich_server` (with the `immich_server` alias) and the NAS
    tunnel stack to it. PostgreSQL, Redis, and unrelated NAS services must remain
-   absent. For a standard Immich Compose service, merge this override and then
-   recreate `immich-server`:
+   absent. Merge the tracked `nas/immich-network.override.yml` with the existing
+   Immich Compose project whenever it is deployed or updated:
 
-   ```yaml
-   services:
-     immich-server:
-       networks:
-         default:
-         immich_share:
-           aliases: [immich_server]
-   networks:
-     immich_share:
-       external: true
-       name: immich_share
+   ```bash
+   docker network create immich_share
+   docker compose -f docker-compose.yml \
+     -f immich-network.override.yml up -d --no-deps immich-server
    ```
 
-   Create the network once with `docker network create immich_share`. Deploy
+   Deploy
    `nas/docker-compose.yml`, all three `nas/Dockerfile.*` files,
+   `nas/immich-network.override.yml`,
    `nas/wireguard-entrypoint.sh`, `nas/nginx-filter.conf`, `nas/logrotate.conf`,
-   `nas/logrotate-entrypoint.sh`, and `nas/wg0-nas.conf` next to Immich. Copy
+   `nas/logrotate-entrypoint.sh`, `nas/security-doctor.sh`, and
+   `nas/wg0-nas.conf` next to Immich. Copy
    `nas/.env.example` to `nas/.env`; set the private `NAS_WG_ADDRESS`, and change
    `IMMICH_SHARE_DOCKER_NETWORK` only if the dedicated network has another
    name. `nginx-filter.conf` is an envsubst template, so the real address stays
@@ -165,6 +160,10 @@ forwarding, and PTY allocation are all refused.
 Install the helper with owner `root:root` and mode 0755. Validate the sudoers
 file with `visudo -cf` before installing it as root-owned mode 0440 under
 `/etc/sudoers.d/`; a syntax error there can break administrative sudo access.
+Install `nas/security-doctor.sh` as root-owned mode 0755 at
+`/usr/local/sbin/immich-share-security-doctor`. The forced `doctor` command is
+read-only and returns only a pass/fail summary; it does not expose paths,
+addresses, container IDs, or log contents.
 
 ## 4. Move SSH into WireGuard
 
@@ -381,6 +380,10 @@ option is an acknowledgement, not encryption by itself.
 ./immich-share doctor
 ```
 
+`open` generates a password unless `--password` requests a hidden confirmation
+prompt or `--password-file` points to a private mode-0600 file. Never place a
+password value directly in a command line.
+
 ### Migration from an earlier release
 
 The ownership registry starts empty. Run `list`: old/manual links appear as
@@ -420,6 +423,11 @@ From an external connection such as cellular data:
 - [ ] ZIP staging contains no source directories after success, error, or cancel.
 - [ ] The gallery reveals no GPS/EXIF fields.
 - [ ] `immich-share doctor` reports that every read-only check passed.
+
+In the separate-controller profile, run `doctor` while the controlled test
+share is active. Its forced NAS check tests the effective nginx configuration,
+a forbidden route, and a fresh query sentinel; it deliberately fails when the
+filter is stopped because a live redaction check would otherwise be impossible.
 
 From the VPS:
 

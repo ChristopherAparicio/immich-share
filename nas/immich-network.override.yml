@@ -1,0 +1,15 @@
+# Merge with the existing Immich Compose project so the public-share tunnel can
+# reach only immich-server. Keep PostgreSQL, Redis, and every unrelated service
+# off this external network.
+services:
+  immich-server:
+    networks:
+      default:
+      immich_share:
+        aliases:
+          - immich_server
+
+networks:
+  immich_share:
+    external: true
+    name: ${IMMICH_SHARE_DOCKER_NETWORK:-immich_share}

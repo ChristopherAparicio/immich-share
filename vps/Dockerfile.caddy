@@ -1,6 +1,10 @@
 # Caddy 2.11.4 and the rate-limit module, both pinned. The digest identifies the
 # multi-architecture index so this Dockerfile works on amd64 and arm64.
 FROM caddy:2.11.4-builder@sha256:4bdeabce8e79d36b23d1cba7d20598cec2c1117ace960d8ca06071f945e8fc9b AS builder
+# GitHub-hosted runners intermittently receive HTTP/2 stream resets from the
+# Go module proxy and checksum database. This affects build transport only;
+# force the Go client to HTTP/1.1 for a reproducible xcaddy fetch.
+ENV GODEBUG=http2client=0
 RUN xcaddy build \
     --with github.com/mholt/caddy-ratelimit@v0.1.0 \
     --replace google.golang.org/grpc=google.golang.org/grpc@v1.82.1 \

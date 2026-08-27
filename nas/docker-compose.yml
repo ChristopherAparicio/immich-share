@@ -7,7 +7,7 @@ services:
     build:
       context: .
       dockerfile: Dockerfile.wireguard
-    image: immich-share-wireguard:1.0.20260223-r0
+    image: immich-share-wireguard:1.0.20260827-r0
     container_name: wg-tunnel
     cap_add:
       - NET_ADMIN
@@ -81,7 +81,7 @@ services:
     build:
       context: .
       dockerfile: Dockerfile.logrotate
-    image: immich-share-logrotate:1
+    image: immich-share-logrotate:1.0.20260827-r0
     container_name: immich-share-logrotate
     init: true
     user: "101:101"
