@@ -122,6 +122,7 @@ jobs:
             -e IMMICH_URL=http://127.0.0.1:3101 \
             -e PUBLIC_BASE_URL=http://127.0.0.1:3102 \
             -e IPP_PORT=3102 \
+            -e IPP_ZIP_MAX_PARALLEL_DOWNLOADS=1 \
             -v "$PWD/scripts/test-ipp-zip-queue-e2e.mjs:/test-ipp-zip-queue-e2e.mjs:ro" \
             -v "$PWD/scripts/fixtures/ipp-zip-limit.json:/app/config.json:ro" \
             "$ipp_image" node /test-ipp-zip-queue-e2e.mjs
