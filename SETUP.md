@@ -126,7 +126,8 @@ values; replace the `<WG_...>` placeholders only in deployed copies.
    Create the network once with `docker network create immich_share`. Deploy
    `nas/docker-compose.yml`, all three `nas/Dockerfile.*` files,
    `nas/wireguard-entrypoint.sh`, `nas/nginx-filter.conf`, `nas/logrotate.conf`,
-   `nas/logrotate-entrypoint.sh`, and `nas/wg0-nas.conf` next to Immich. Copy
+   `nas/logrotate-entrypoint.sh`, `nas/security-doctor.sh`, and
+   `nas/wg0-nas.conf` next to Immich. Copy
    `nas/.env.example` to `nas/.env`; set the private `NAS_WG_ADDRESS`, and change
    `IMMICH_SHARE_DOCKER_NETWORK` only if the dedicated network has another
    name. `nginx-filter.conf` is an envsubst template, so the real address stays
@@ -165,6 +166,10 @@ forwarding, and PTY allocation are all refused.
 Install the helper with owner `root:root` and mode 0755. Validate the sudoers
 file with `visudo -cf` before installing it as root-owned mode 0440 under
 `/etc/sudoers.d/`; a syntax error there can break administrative sudo access.
+Install `nas/security-doctor.sh` as root-owned mode 0755 at
+`/usr/local/sbin/immich-share-security-doctor`. The forced `doctor` command is
+read-only and returns only a pass/fail summary; it does not expose paths,
+addresses, container IDs, or log contents.
 
 ## 4. Move SSH into WireGuard
 
@@ -381,6 +386,10 @@ option is an acknowledgement, not encryption by itself.
 ./immich-share doctor
 ```
 
+`open` generates a password unless `--password` requests a hidden confirmation
+prompt or `--password-file` points to a private mode-0600 file. Never place a
+password value directly in a command line.
+
 ### Migration from an earlier release
 
 The ownership registry starts empty. Run `list`: old/manual links appear as
@@ -420,6 +429,11 @@ From an external connection such as cellular data:
 - [ ] ZIP staging contains no source directories after success, error, or cancel.
 - [ ] The gallery reveals no GPS/EXIF fields.
 - [ ] `immich-share doctor` reports that every read-only check passed.
+
+In the separate-controller profile, run `doctor` while the controlled test
+share is active. Its forced NAS check tests the effective nginx configuration,
+a forbidden route, and a fresh query sentinel; it deliberately fails when the
+filter is stopped because a live redaction check would otherwise be impossible.
 
 From the VPS:
 

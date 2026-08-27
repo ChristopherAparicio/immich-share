@@ -2,6 +2,7 @@
 # The account is intentionally NOT a member of the root-equivalent Docker group.
 Cmnd_Alias IMMICH_SHARE_FORWARD = /usr/bin/docker start wg-nginx-filter, \
     /usr/bin/docker stop --time 10 wg-nginx-filter, \
-    /usr/bin/docker inspect --format {{.State.Running}} wg-nginx-filter
+    /usr/bin/docker inspect --format {{.State.Running}} wg-nginx-filter, \
+    /usr/local/sbin/immich-share-security-doctor
 
 immich-share-gate ALL=(root) NOPASSWD: IMMICH_SHARE_FORWARD

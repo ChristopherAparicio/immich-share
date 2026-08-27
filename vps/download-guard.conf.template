@@ -26,7 +26,8 @@ server {
     server_tokens off;
 
     access_log /dev/stdout download_guard;
-    error_log /dev/stderr warn;
+    # Upstream failures include the complete credential-bearing request target.
+    error_log /dev/null;
 
     client_max_body_size 1k;
     client_header_timeout 10s;

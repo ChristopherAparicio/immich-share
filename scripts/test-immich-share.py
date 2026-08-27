@@ -151,6 +151,29 @@ class OwnershipTests(unittest.TestCase):
         with self.assertRaises(SystemExit):
             module.read_private_secret(secret, "test secret")
 
+    def test_config_must_not_be_group_or_world_readable(self):
+        config = Path(self.temp.name) / "config.ini"
+        config.write_text("[sharing]\ndefault_ttl = 24h\n")
+        config.chmod(0o644)
+        with self.assertRaises(SystemExit):
+            module.load_config(str(config))
+
+    def test_config_symlink_is_refused(self):
+        config = Path(self.temp.name) / "config.ini"
+        target = Path(self.temp.name) / "target.ini"
+        target.write_text("[sharing]\ndefault_ttl = 24h\n")
+        target.chmod(0o600)
+        config.symlink_to(target)
+        with self.assertRaises(SystemExit):
+            module.load_config(str(config))
+
+    def test_private_config_is_loaded_from_validated_descriptor(self):
+        config = Path(self.temp.name) / "config.ini"
+        config.write_text("[sharing]\ndefault_ttl = 48h\n")
+        config.chmod(0o600)
+        loaded = module.load_config(str(config))
+        self.assertEqual(loaded["sharing"]["default_ttl"], "48h")
+
     def test_cleartext_remote_immich_requires_explicit_tunnel_acknowledgement(self):
         secret = Path(self.temp.name) / "api-key"
         secret.write_text("test-secret")
@@ -175,7 +198,8 @@ class OwnershipTests(unittest.TestCase):
             album="Test album",
             ttl="24h",
             max_ttl=timedelta(days=30),
-            password=None,
+            prompt_password=False,
+            password_file=None,
             for_="recipient",
             allow_download=True,
             managed_state=self.state,
@@ -187,6 +211,14 @@ class OwnershipTests(unittest.TestCase):
         self.assertEqual(self.state.keys(), set())
         self.assertIn("new_share_key_1234.caddy", edge.removed)
         self.assertEqual(edge.forward, [True, False])
+
+    def test_password_file_must_be_private(self):
+        password = Path(self.temp.name) / "share-password"
+        password.write_text("correct-horse-battery-staple")
+        password.chmod(0o644)
+        args = SimpleNamespace(password_file=str(password), prompt_password=False)
+        with self.assertRaises(SystemExit):
+            module.resolve_open_password(args)
 
     def test_share_snippet_exposes_only_bounded_zip_queue_routes(self):
         rendered = module.render_share_snippet(
@@ -240,6 +272,94 @@ class DeploymentBoundaryTests(unittest.TestCase):
         self.assertNotIn("$request_uri", log_format)
         self.assertNotIn("$request ", log_format)
         self.assertIn("error_log /dev/null", config)
+
+    def test_download_guard_disables_credential_bearing_error_logs(self):
+        global_config = (ROOT / "vps" / "download-guard-nginx.conf").read_text()
+        server_config = (ROOT / "vps" / "download-guard.conf.template").read_text()
+        self.assertIn("error_log /dev/null", global_config)
+        self.assertIn("error_log /dev/null", server_config)
+        self.assertNotRegex(global_config, r"error_log\s+/dev/stderr")
+        self.assertNotRegex(server_config, r"error_log\s+/dev/stderr")
+
+    def test_nas_images_apply_security_updates_before_packages(self):
+        for filename in ("Dockerfile.wireguard", "Dockerfile.logrotate", "Dockerfile.nginx"):
+            contents = (ROOT / "nas" / filename).read_text()
+            self.assertIn("apk upgrade --no-cache", contents, filename)
+
+    def test_separate_doctor_includes_all_trust_zones(self):
+        class FakeConfig(configparser.ConfigParser):
+            pass
+
+        cfg = FakeConfig()
+        cfg.read_dict(
+            {
+                "controller": {
+                    "mode": "separate",
+                    "expected_wireguard_peers": "2",
+                    "controller_wireguard_address": "192.0.2.3",
+                },
+                "nas": {"doctor_cmd": "true"},
+            }
+        )
+        labels = []
+
+        class DoctorEdge:
+            def __getattr__(self, _name):
+                return lambda *args: "ok"
+
+        class DoctorImmich:
+            api_key_file = Path("/tmp/not-used")
+            public_base = "https://photos.example.com"
+
+            def probe(self):
+                return "ok"
+
+        args = SimpleNamespace(
+            config_object=cfg,
+            mode=None,
+            managed_state=SimpleNamespace(path=Path("/tmp/not-used")),
+        )
+        original_gate = module.probe_nas_gate
+        original_pf = module.probe_pf_filter
+        original_api = module.probe_api_key_permissions
+        original_state = module.probe_state_permissions
+        original_public = module.probe_public_root
+        try:
+            module.probe_nas_gate = lambda _cfg: "ok"
+            module.probe_pf_filter = lambda _anchor: "ok"
+            module.probe_api_key_permissions = lambda _path: "ok"
+            module.probe_state_permissions = lambda _state: "ok"
+            module.probe_public_root = lambda _url: "ok"
+            import builtins
+
+            original_print = builtins.print
+            builtins.print = lambda message="", *a, **k: labels.append(str(message))
+            try:
+                result = module.cmd_doctor(args, DoctorImmich(), DoctorEdge())
+            finally:
+                builtins.print = original_print
+        finally:
+            module.probe_nas_gate = original_gate
+            module.probe_pf_filter = original_pf
+            module.probe_api_key_permissions = original_api
+            module.probe_state_permissions = original_state
+            module.probe_public_root = original_public
+        self.assertEqual(result, 0)
+        output = "\n".join(labels)
+        self.assertIn("NAS trust-boundary gate", output)
+        self.assertIn("Controller packet filter", output)
+        self.assertIn("VPS-to-controller isolation", output)
+        self.assertIn("VPS published ports", output)
+        self.assertIn("Download-guard runtime logging", output)
+        self.assertIn("VPS live refusal and log redaction", output)
+
+    def test_mac_wireguard_boot_is_ordered_fail_closed(self):
+        script = (ROOT / "macmini" / "start-wireguard-fail-closed.sh").read_text()
+        self.assertLess(script.index('"$pfctl_bin" -f'), script.index('"$wg_quick_bin" up'))
+        self.assertIn("anchor has no inbound block rule", script)
+        guide = (ROOT / "macmini" / "pf-wireguard.md").read_text()
+        self.assertIn("single LaunchDaemon", guide)
+        self.assertNotIn("after a short boot delay", guide)
 
 
 if __name__ == "__main__":

@@ -16,6 +16,9 @@ case "${SSH_ORIGINAL_COMMAND:-}" in
     "forward status")
         exec sudo -n /usr/bin/docker inspect --format '{{.State.Running}}' "$container"
         ;;
+    "doctor")
+        exec sudo -n /usr/local/sbin/immich-share-security-doctor
+        ;;
     *)
         printf 'Denied command\n' >&2
         exit 64
