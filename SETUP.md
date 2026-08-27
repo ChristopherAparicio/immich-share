@@ -107,24 +107,18 @@ values; replace the `<WG_...>` placeholders only in deployed copies.
 3. Create a dedicated external Docker network named `immich_share`. Persistently
    attach only `immich_server` (with the `immich_server` alias) and the NAS
    tunnel stack to it. PostgreSQL, Redis, and unrelated NAS services must remain
-   absent. For a standard Immich Compose service, merge this override and then
-   recreate `immich-server`:
+   absent. Merge the tracked `nas/immich-network.override.yml` with the existing
+   Immich Compose project whenever it is deployed or updated:
 
-   ```yaml
-   services:
-     immich-server:
-       networks:
-         default:
-         immich_share:
-           aliases: [immich_server]
-   networks:
-     immich_share:
-       external: true
-       name: immich_share
+   ```bash
+   docker network create immich_share
+   docker compose -f docker-compose.yml \
+     -f immich-network.override.yml up -d --no-deps immich-server
    ```
 
-   Create the network once with `docker network create immich_share`. Deploy
+   Deploy
    `nas/docker-compose.yml`, all three `nas/Dockerfile.*` files,
+   `nas/immich-network.override.yml`,
    `nas/wireguard-entrypoint.sh`, `nas/nginx-filter.conf`, `nas/logrotate.conf`,
    `nas/logrotate-entrypoint.sh`, `nas/security-doctor.sh`, and
    `nas/wg0-nas.conf` next to Immich. Copy

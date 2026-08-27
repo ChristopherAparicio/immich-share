@@ -286,6 +286,14 @@ class DeploymentBoundaryTests(unittest.TestCase):
             contents = (ROOT / "nas" / filename).read_text()
             self.assertIn("apk upgrade --no-cache", contents, filename)
 
+    def test_immich_network_override_attaches_only_the_server(self):
+        override = (ROOT / "nas" / "immich-network.override.yml").read_text()
+        self.assertIn("  immich-server:", override)
+        self.assertIn("aliases:", override)
+        self.assertIn("- immich_server", override)
+        self.assertNotIn("redis:", override)
+        self.assertNotIn("database:", override)
+
     def test_separate_doctor_includes_all_trust_zones(self):
         class FakeConfig(configparser.ConfigParser):
             pass
