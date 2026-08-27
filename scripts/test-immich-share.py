@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 import configparser
+import hashlib
 import importlib.machinery
 import importlib.util
 import json
@@ -193,6 +194,13 @@ class OwnershipTests(unittest.TestCase):
         )
 
         self.assertIn("/share/managed_key_1234/download/prepare", rendered)
+        self.assertIn(
+            f"log_append share_ref {hashlib.sha256(b'managed_key_1234').hexdigest()[:16]}",
+            rendered,
+        )
+        self.assertIn("log_append share_action gallery", rendered)
+        self.assertIn("log_append share_action view", rendered)
+        self.assertIn("log_append share_action download", rendered)
         self.assertIn(
             "^/share/managed_key_1234/download/jobs/[A-Za-z0-9_-]{24}/file/?$",
             rendered,

@@ -66,7 +66,8 @@
 	import /etc/caddy/shares.d/*.caddy
 
 	# Keep short-lived request telemetry without recording credential-bearing
-	# share keys or secret query values. Home-side telemetry ingests this file.
+	# share keys or secret query values. Generated share routes append only a
+	# one-way share reference and a coarse action for home-side telemetry.
 	log {
 		output file /data/access.log {
 			mode 0600
@@ -75,12 +76,10 @@
 			roll_keep_for 24h
 		}
 		format filter {
-			request>uri query {
-				replace key REDACTED
-				replace password REDACTED
-				replace token REDACTED
-			}
-			request>uri regexp "^(/(?:share|s)/(?:photo/|video/|meta/)?)[^/?]+" "${1}REDACTED"
+			# A single replacement is deliberately stronger than chained path/query
+			# filters: Caddy stores one result per field and later filters can expose
+			# the original value again.
+			request>uri replace REDACTED
 		}
 	}
 

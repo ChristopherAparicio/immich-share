@@ -67,6 +67,15 @@ jobs:
             -v "$PWD/vps/download-guard.conf.template:/etc/nginx/templates/default.conf.template:ro" \
             immich-share-nginx:1.31.4-hardened nginx -t
 
+      - name: Verify Caddy access-log redaction
+        run: |
+          CADDY_TEST_IMAGE=vps-caddy scripts/test-caddy-log-redaction.sh
+          python3 scripts/render-caddy-test-config.py | docker run --rm --interactive \
+            --env PUBLIC_DOMAIN=localhost \
+            --tmpfs /data:uid=1000,gid=1000,mode=0700 \
+            --tmpfs /config:uid=1000,gid=1000,mode=0700 \
+            vps-caddy caddy validate --config - --adapter caddyfile
+
       - name: Run immutable IPP ZIP E2E
         run: |
           ipp_image=$(docker compose -f vps/docker-compose.yml config --images | grep '^ghcr.io/.*immich-public-proxy')
