@@ -248,7 +248,7 @@ class DeploymentBoundaryTests(unittest.TestCase):
             compose,
             re.compile(
                 r"image: ghcr\.io/christopheraparicio/immich-public-proxy:"
-                r"3\.2\.1-immich-share\.3@sha256:[0-9a-f]{64}"
+                r"3\.2\.1-immich-share\.4@sha256:[0-9a-f]{64}"
             ),
         )
         self.assertFalse((ROOT / "vps" / "Dockerfile.ipp").exists())
