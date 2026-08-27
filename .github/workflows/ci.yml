@@ -43,7 +43,8 @@ jobs:
 
       - name: Validate Compose and build edge images
         run: |
-          mkdir -p vps/shares.d
+          mkdir -p vps/shares.d vps/caddy-data vps/caddy-config
+          sudo chown -R 1000:1000 vps/caddy-data vps/caddy-config
           docker compose -f vps/docker-compose.yml config --quiet
           docker compose -f vps/docker-compose.yml build caddy download-guard
 
