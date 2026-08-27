@@ -10,9 +10,13 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 FORBIDDEN_PATHS = [
-    re.compile(r"(^|/)(?:config\.ini|api-key|private\.key)$"),
+    re.compile(
+        r"(^|/)(?:config\.ini|api-key|private\.key|credentials\.json|"
+        r"\.netrc|\.npmrc|id_rsa|id_ed25519|managed-shares\.json)$"
+    ),
     re.compile(r"(^|/).*\.key$"),
-    re.compile(r"(^|/)\.env$"),
+    re.compile(r"(^|/)\.env(?:\.(?!example$).+)?$"),
+    re.compile(r"(^|/).+\.(?:pem|p8|p12|pfx|secret|mobileconfig|age|kdbx)$"),
 ]
 FORBIDDEN_CONTENT = {
     "RFC1918 address": re.compile(

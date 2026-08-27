@@ -8,6 +8,10 @@
 		"maxDownloadZipBytes": 2147483648,
 		"minDownloadZipFreeBytes": 5368709120,
 		"downloadZipCacheTtlSeconds": 1800,
+		"downloadZipQueueMaxWaiting": 3,
+		"downloadZipQueueHeartbeatSeconds": 300,
+		"downloadZipReadyLeaseSeconds": 120,
+		"downloadZipMaxReadyLeaseSeconds": 300,
 		"showMetadata": {
 			"exif": {},
 			"location": {}

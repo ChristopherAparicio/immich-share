@@ -41,11 +41,9 @@ services:
       - app_net
 
   ipp:
-    # IPP 3.2.1 pinned by a multi-architecture digest.
-    build:
-      context: .
-      dockerfile: Dockerfile.ipp
-    image: immich-share-ipp:3.2.1-hardened
+    # Separate AGPL fork. Release deployments append the verified immutable
+    # multi-architecture digest to this exact version tag.
+    image: ghcr.io/christopheraparicio/immich-public-proxy:3.2.1-immich-share.3@sha256:2d2f0d69f403a0d2a7c75d50202a96e14fbb961b200caac0a6f05809d5dfada3
     container_name: ipp
     init: true
     restart: unless-stopped
