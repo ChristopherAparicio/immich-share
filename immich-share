@@ -17,6 +17,7 @@ from __future__ import annotations  # Compatibility with the Mac mini system Pyt
 import argparse
 import configparser
 import fcntl
+import getpass
 import hashlib
 import ipaddress
 import json
@@ -157,8 +158,14 @@ def load_config(explicit_path: str | None = None) -> configparser.ConfigParser:
     cfg = configparser.ConfigParser()
     candidates = [Path(explicit_path).expanduser()] if explicit_path else CONFIG_PATHS
     for p in candidates:
-        if p.exists():
-            cfg.read(p)
+        contents = read_private_file(
+            p, "configuration", max_bytes=1024 * 1024, allow_missing=True
+        )
+        if contents is not None:
+            try:
+                cfg.read_string(contents, source=str(p))
+            except configparser.Error as exc:
+                die(f"invalid configuration {p}: {exc}")
             cfg.source_path = p
             return cfg
     die(
@@ -531,6 +538,76 @@ class Edge:
                 )
         return "non-root, read-only, cap-drop=ALL"
 
+    def probe_published_ports(self) -> str:
+        r = self._ssh(
+            "docker inspect --format '{{json .HostConfig.PortBindings}}' "
+            "caddy ipp download-guard"
+        )
+        if r.returncode != 0:
+            raise RuntimeError((r.stderr or r.stdout).strip()[:200])
+        lines = r.stdout.splitlines()
+        if len(lines) != 3:
+            raise RuntimeError("unexpected Docker port inspection output")
+        bindings = [json.loads(line) if line not in {"", "null"} else {} for line in lines]
+        caddy_ports = set(bindings[0])
+        if caddy_ports != {"80/tcp", "443/tcp"}:
+            raise RuntimeError(f"unexpected Caddy published ports: {sorted(caddy_ports)}")
+        if bindings[1] or bindings[2]:
+            raise RuntimeError("IPP or download-guard has a published host port")
+        return "only Caddy TCP 80/443 are published"
+
+    def probe_download_guard_logging(self) -> str:
+        r = self._ssh(
+            "config=$(docker exec download-guard nginx -T 2>/dev/null) || exit 1; "
+            "count=$(printf '%s\\n' \"$config\" | grep -F -c 'error_log /dev/null'); "
+            "test \"$count\" -ge 2; "
+            "! printf '%s\\n' \"$config\" | grep -F -q 'error_log /dev/stderr'"
+        )
+        if r.returncode != 0:
+            raise RuntimeError("effective download-guard error logging is unsafe")
+        return "effective runtime error logs are disabled"
+
+    def probe_vps_runtime_redaction(self, public_base: str) -> str:
+        sentinel = "DOCTOR" + secrets.token_hex(12).upper()
+        marker = "IMMICHSHAREDOCTOR" + secrets.token_hex(8).upper()
+        url = public_base.rstrip("/") + "/auth/login?key=" + sentinel
+        request = urllib.request.Request(
+            url, headers={"User-Agent": marker}
+        )
+        try:
+            with urllib.request.urlopen(request, timeout=10) as response:
+                raise RuntimeError(f"forbidden route returned HTTP {response.status}")
+        except urllib.error.HTTPError as exc:
+            if exc.code != 404:
+                raise RuntimeError(
+                    f"forbidden route returned HTTP {exc.code}; expected 404"
+                ) from exc
+        except urllib.error.URLError as exc:
+            raise RuntimeError(str(exc.reason)) from exc
+
+        quoted_sentinel = shlex.quote(sentinel)
+        quoted_marker = shlex.quote(marker)
+        directory = shlex.quote(self.deployment_dir)
+        r = self._ssh(
+            f"sentinel={quoted_sentinel}; marker={quoted_marker}; "
+            "recorded=0; for attempt in 1 2 3 4 5; do "
+            f"grep -R -F -q \"$marker\" {directory}/caddy-data 2>/dev/null "
+            "&& { recorded=1; break; }; sleep 1; done; "
+            "test \"$recorded\" -eq 1 || exit 43; "
+            "for container in caddy ipp download-guard; do "
+            "docker logs \"$container\" 2>&1 | grep -F -q \"$sentinel\" && exit 41; "
+            "done; "
+            f"grep -R -F -q \"$sentinel\" {directory}/caddy-data 2>/dev/null && exit 42; "
+            "exit 0"
+        )
+        if r.returncode in {41, 42}:
+            raise RuntimeError("query sentinel leaked into VPS runtime logs")
+        if r.returncode == 43:
+            raise RuntimeError("Caddy diagnostic request was not observable in its access log")
+        if r.returncode != 0:
+            raise RuntimeError((r.stderr or r.stdout).strip()[:200] or "log probe failed")
+        return "forbidden route refused and query sentinel absent from live logs"
+
     def probe_disk(self) -> str:
         directory = shlex.quote(self.deployment_dir)
         r = self._ssh(f"df -Pk {directory} | awk 'NR==2 {{print $4}}'")
@@ -560,6 +637,26 @@ class Edge:
             raise RuntimeError(f"{recent}/{expected_peers} expected peers recent")
         return f"{recent}/{len(epochs)} peers recent"
 
+    def probe_controller_blocked(self, address: str) -> str:
+        try:
+            parsed = ipaddress.ip_address(address)
+        except ValueError as exc:
+            raise RuntimeError("invalid controller WireGuard address") from exc
+        if not parsed.is_private:
+            raise RuntimeError("controller WireGuard address must be private")
+        quoted = shlex.quote(str(parsed))
+        r = self._ssh(
+            f"if ping -c 1 -W 2 {quoted} >/dev/null 2>&1; then exit 41; fi; "
+            f"if nc -z -w 2 {quoted} 22 >/dev/null 2>&1; then exit 42; fi"
+        )
+        if r.returncode == 41:
+            raise RuntimeError("VPS can ping the controller through WireGuard")
+        if r.returncode == 42:
+            raise RuntimeError("VPS can reach controller TCP/22 through WireGuard")
+        if r.returncode != 0:
+            raise RuntimeError((r.stderr or r.stdout).strip()[:200] or "probe failed")
+        return "VPS-initiated ICMP and TCP/22 are blocked"
+
 
 # ---------- helpers ----------
 
@@ -573,13 +670,21 @@ def _loopback_host(host: str) -> bool:
         return False
 
 
-def read_private_secret(path: Path, label: str) -> str:
-    """Read a small regular secret file without following symlinks."""
+def read_private_file(
+    path: Path, label: str, *, max_bytes: int, allow_missing: bool = False
+) -> str | None:
+    """Read a private regular file once, without following symlinks."""
     flags = os.O_RDONLY
     if hasattr(os, "O_NOFOLLOW"):
         flags |= os.O_NOFOLLOW
+    if hasattr(os, "O_CLOEXEC"):
+        flags |= os.O_CLOEXEC
     try:
         fd = os.open(path, flags)
+    except FileNotFoundError:
+        if allow_missing:
+            return None
+        die(f"{label} file does not exist: {path}")
     except OSError as exc:
         die(f"{label} file cannot be opened securely: {path} ({exc})")
     try:
@@ -594,12 +699,19 @@ def read_private_secret(path: Path, label: str) -> str:
             )
         with os.fdopen(fd) as handle:
             fd = -1
-            value = handle.read(16_385)
+            value = handle.read(max_bytes + 1)
     finally:
         if fd >= 0:
             os.close(fd)
-    if not value.strip() or len(value) > 16_384 or "\x00" in value:
+    if not value.strip() or len(value) > max_bytes or "\x00" in value:
         die(f"{label} file is empty or invalid: {path}")
+    return value
+
+
+def read_private_secret(path: Path, label: str) -> str:
+    """Read a small regular secret file without following symlinks."""
+    value = read_private_file(path, label, max_bytes=16_384)
+    assert value is not None
     return value.strip()
 
 
@@ -628,6 +740,21 @@ def validate_password(value: str) -> str:
     if len(value) > 128 or any(ch in "\r\n\x00" for ch in value):
         die("custom share password is invalid")
     return value
+
+
+def resolve_open_password(args) -> str:
+    password_file = getattr(args, "password_file", None)
+    if password_file:
+        return validate_password(
+            read_private_secret(Path(password_file).expanduser(), "share password")
+        )
+    if getattr(args, "prompt_password", False):
+        first = getpass.getpass("Share password: ")
+        second = getpass.getpass("Confirm share password: ")
+        if first != second:
+            die("share password confirmation does not match")
+        return validate_password(first)
+    return gen_password()
 
 
 def check_key(key: str) -> str:
@@ -713,6 +840,40 @@ def run_local(args: list[str]) -> str:
             (result.stderr or result.stdout).strip()[:200] or "command failed"
         )
     return result.stdout.strip()
+
+
+def probe_nas_gate(cfg) -> str:
+    command = cfg.get("nas", "doctor_cmd", fallback="").strip()
+    if not command:
+        raise RuntimeError("[nas] doctor_cmd is required in separate mode")
+    try:
+        argv = shlex.split(command)
+    except ValueError as exc:
+        raise RuntimeError("invalid [nas] doctor_cmd") from exc
+    if not argv:
+        raise RuntimeError("[nas] doctor_cmd is empty")
+    result = subprocess.run(argv, capture_output=True, text=True, timeout=30)
+    if result.returncode != 0:
+        raise RuntimeError(
+            (result.stderr or result.stdout).strip()[:240] or "NAS security check failed"
+        )
+    detail = result.stdout.strip().splitlines()
+    return detail[-1][:200] if detail else "NAS boundary checks passed"
+
+
+def probe_pf_filter(anchor: str) -> str:
+    if not re.fullmatch(r"[A-Za-z0-9_.-]{1,64}", anchor):
+        raise RuntimeError("invalid pf anchor name")
+    prefix = ["sudo", "-n"] if os.geteuid() != 0 else []
+    status = run_local(prefix + ["/sbin/pfctl", "-s", "info"])
+    if not re.search(r"Status:\s+Enabled", status):
+        raise RuntimeError("macOS packet filter is not enabled")
+    rules = run_local(prefix + ["/sbin/pfctl", "-a", anchor, "-sr"])
+    if not re.search(r"\bblock\b.*\bin\b", rules):
+        raise RuntimeError(f"pf anchor {anchor} has no inbound block rule")
+    if not re.search(r"\bpass\b.*\bout\b.*\bkeep state\b", rules):
+        raise RuntimeError(f"pf anchor {anchor} has no stateful outbound rule")
+    return f"pf enabled with fail-closed {anchor} anchor"
 
 
 def probe_nas_controller(cfg) -> list[tuple[str, Callable[[], str]]]:
@@ -932,6 +1093,21 @@ def cmd_doctor(args, immich: Immich, edge: Edge):
     checks: list[tuple[str, Callable[[], str]]] = []
     if mode == "nas":
         checks.extend(probe_nas_controller(cfg))
+    else:
+        pf_anchor = cfg.get("controller", "pf_anchor", fallback="wg-inbound")
+        controller_address = cfg.get(
+            "controller", "controller_wireguard_address", fallback=""
+        ).strip()
+        checks.extend(
+            [
+                ("NAS trust-boundary gate", lambda: probe_nas_gate(cfg)),
+                ("Controller packet filter", lambda: probe_pf_filter(pf_anchor)),
+                (
+                    "VPS-to-controller isolation",
+                    lambda: edge.probe_controller_blocked(controller_address),
+                ),
+            ]
+        )
     checks.extend(
         [
             (
@@ -946,6 +1122,12 @@ def cmd_doctor(args, immich: Immich, edge: Edge):
             ("VPS SSH", edge.probe_ssh),
             ("VPS services", edge.probe_services),
             ("VPS container hardening", edge.probe_container_hardening),
+            ("VPS published ports", edge.probe_published_ports),
+            ("Download-guard runtime logging", edge.probe_download_guard_logging),
+            (
+                "VPS live refusal and log redaction",
+                lambda: edge.probe_vps_runtime_redaction(immich.public_base),
+            ),
             ("VPS staging disk", edge.probe_disk),
             ("WireGuard handshakes", lambda: edge.probe_wireguard(expected_peers)),
             ("Public portal default", lambda: probe_public_root(immich.public_base)),
@@ -975,7 +1157,7 @@ def cmd_open(args, immich: Immich, edge: Edge):
     if ttl > args.max_ttl:
         die(f"TTL {args.ttl} exceeds the configured maximum")
     expires_at = (datetime.now(timezone.utc) + ttl).strftime("%Y-%m-%dT%H:%M:%S.000Z")
-    password = validate_password(args.password) if args.password else gen_password()
+    password = resolve_open_password(args)
     # HIGH: the description is inserted into an imported Caddy comment. Remove
     # line breaks so it cannot inject directives.
     description = clean_description(args.for_ or "")
@@ -1207,7 +1389,17 @@ def main():
     po.add_argument(
         "--for", dest="for_", default="", help="recipient label (one link per person)"
     )
-    po.add_argument("--password", default=None, help="otherwise generated")
+    passwords = po.add_mutually_exclusive_group()
+    passwords.add_argument(
+        "--password",
+        dest="prompt_password",
+        action="store_true",
+        help="prompt twice without exposing the password in shell history or process listings",
+    )
+    passwords.add_argument(
+        "--password-file",
+        help="read a custom password from a private regular file owned by the current user",
+    )
     downloads = po.add_mutually_exclusive_group()
     downloads.add_argument(
         "--download",

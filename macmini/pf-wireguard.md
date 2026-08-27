@@ -34,10 +34,25 @@ replies from the VPS to outbound SSH or ping traffic would hit `block in`.
 
 ## Persistence after reboot
 
-| LaunchDaemon | Role |
-|---|---|
-| `/Library/LaunchDaemons/local.wg-quick-wg0.plist` | Run `wg-quick up wg0` at boot using `/opt/homebrew/etc/wireguard/wg0.conf` |
-| `/Library/LaunchDaemons/local.pf-wg.plist` | Run `pfctl -f /etc/pf.conf && pfctl -e` after a short boot delay |
+Do not start WireGuard and pf from independent LaunchDaemons: scheduler order is
+not guaranteed, so the tunnel can briefly exist before the inbound block.
+
+Install the repository's fail-closed starter and its single LaunchDaemon:
+
+```bash
+sudo install -o root -g wheel -m 0755 macmini/start-wireguard-fail-closed.sh \
+  /usr/local/sbin/immich-share-wireguard-start
+sudo install -o root -g wheel -m 0644 macmini/local.immich-share-wireguard.plist \
+  /Library/LaunchDaemons/local.immich-share-wireguard.plist
+sudo plutil -lint /Library/LaunchDaemons/local.immich-share-wireguard.plist
+sudo launchctl bootstrap system /Library/LaunchDaemons/local.immich-share-wireguard.plist
+```
+
+Remove or disable any previous independent WireGuard/pf LaunchDaemons and the
+WireGuard GUI auto-connect setting first. The starter validates and enables pf,
+verifies the effective anchor, and only then calls `wg-quick up`. If any filter
+check fails, it leaves the tunnel down. The default private config path is
+`/opt/homebrew/etc/wireguard/wg0.conf`; it must be root-owned mode 0600.
 
 ## Validation
 

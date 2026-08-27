@@ -2,6 +2,9 @@ import http from 'node:http'
 
 const upstreamPort = 3101
 const ippPort = Number(process.env.IPP_PORT || 3102)
+// Production IPP is reachable only through the adjacent TLS proxy. Exercise
+// the same trusted one-hop scheme so Secure session cookies are emitted.
+const tlsProxyHeaders = { 'X-Forwarded-Proto': 'https' }
 const shareKey = 'test-share-key-1234'
 const assets = [0, 1, 2].map(index => ({
   id: `00000000-0000-4000-8000-00000000000${index}`,
@@ -66,7 +69,9 @@ function csrfFrom (cookie) {
 
 async function prepare (cookie = '') {
   if (!cookie) {
-    const gallery = await fetch(`http://127.0.0.1:${ippPort}/share/${shareKey}`)
+    const gallery = await fetch(`http://127.0.0.1:${ippPort}/share/${shareKey}`, {
+      headers: tlsProxyHeaders
+    })
     if (!gallery.ok) throw new Error(`gallery returned ${gallery.status}`)
     cookie = mergeCookies('', gallery)
   }
@@ -75,6 +80,7 @@ async function prepare (cookie = '') {
   const response = await fetch(`http://127.0.0.1:${ippPort}/share/${shareKey}/download/prepare`, {
     method: 'POST',
     headers: {
+      ...tlsProxyHeaders,
       'Content-Type': 'application/json',
       'X-IPP-CSRF-Token': csrf,
       ...(cookie ? { Cookie: cookie } : {})
@@ -87,7 +93,7 @@ async function prepare (cookie = '') {
 
 async function status (job, cookie) {
   const response = await fetch(`http://127.0.0.1:${ippPort}/share/${shareKey}/download/jobs/${job.id}`, {
-    headers: { Cookie: cookie },
+    headers: { ...tlsProxyHeaders, Cookie: cookie },
     cache: 'no-store'
   })
   if (!response.ok) throw new Error(`status returned ${response.status}: ${await response.text()} (cookie=${cookie ? 'present' : 'missing'}, id=${job.id})`)
@@ -122,6 +128,7 @@ try {
   const sameVisitor = await fetch(`http://127.0.0.1:${ippPort}/share/${shareKey}/download/prepare`, {
     method: 'POST',
     headers: {
+      ...tlsProxyHeaders,
       'Content-Type': 'application/json',
       Cookie: first.cookie,
       'X-IPP-CSRF-Token': csrfFrom(first.cookie)
@@ -138,7 +145,7 @@ try {
 
   const firstFile = await fetch(
     `http://127.0.0.1:${ippPort}/share/${shareKey}/download/jobs/${first.job.id}/file`,
-    { headers: { Cookie: first.cookie } }
+    { headers: { ...tlsProxyHeaders, Cookie: first.cookie } }
   )
   const firstBody = Buffer.from(await firstFile.arrayBuffer())
   if (firstFile.status !== 200 || firstBody.subarray(0, 2).toString() !== 'PK') {
@@ -151,7 +158,7 @@ try {
   await waitFor(second.job, second.cookie, 'ready')
   const ranged = await fetch(
     `http://127.0.0.1:${ippPort}/share/${shareKey}/download/jobs/${second.job.id}/file`,
-    { headers: { Cookie: second.cookie, Range: 'bytes=100-199' } }
+    { headers: { ...tlsProxyHeaders, Cookie: second.cookie, Range: 'bytes=100-199' } }
   )
   const rangeBody = Buffer.from(await ranged.arrayBuffer())
   if (ranged.status !== 206 || rangeBody.length !== 100) {
@@ -163,6 +170,7 @@ try {
     {
       method: 'DELETE',
       headers: {
+        ...tlsProxyHeaders,
         Cookie: second.cookie,
         'X-IPP-CSRF-Token': csrfFrom(second.cookie)
       }

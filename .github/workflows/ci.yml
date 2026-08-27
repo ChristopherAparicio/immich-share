@@ -48,6 +48,41 @@ jobs:
           docker compose -f vps/docker-compose.yml config --quiet
           docker compose -f vps/docker-compose.yml build caddy download-guard
 
+      - name: Validate Compose and build NAS images
+        run: |
+          docker compose -f nas/docker-compose.yml config --quiet
+          docker compose -f nas/docker-compose.yml build wireguard nginx-filter logrotate
+
+      - name: Scan WireGuard image
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          image-ref: immich-share-wireguard:1.0.20260827-r0
+          format: table
+          exit-code: 1
+          ignore-unfixed: false
+          vuln-type: os,library
+          severity: HIGH,CRITICAL
+
+      - name: Scan NAS nginx image
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          image-ref: immich-share-nginx:1.31.4-hardened
+          format: table
+          exit-code: 1
+          ignore-unfixed: false
+          vuln-type: os,library
+          severity: HIGH,CRITICAL
+
+      - name: Scan logrotate image
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          image-ref: immich-share-logrotate:1.0.20260827-r0
+          format: table
+          exit-code: 1
+          ignore-unfixed: false
+          vuln-type: os,library
+          severity: HIGH,CRITICAL
+
       - name: Validate Caddy and nginx
         run: |
           docker compose -f vps/docker-compose.yml run --rm --no-deps \
@@ -66,6 +101,9 @@ jobs:
             -v "$PWD/vps/download-guard-nginx.conf:/etc/nginx/nginx.conf:ro" \
             -v "$PWD/vps/download-guard.conf.template:/etc/nginx/templates/default.conf.template:ro" \
             immich-share-nginx:1.31.4-hardened nginx -t
+
+      - name: Verify download-guard upstream-error redaction
+        run: scripts/test-download-guard-log-redaction.sh
 
       - name: Verify Caddy access-log redaction
         run: |
