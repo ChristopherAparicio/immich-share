@@ -1,0 +1,5 @@
+# Optional stanza to merge into the deployed VPS /etc/wireguard/wg0.conf.
+# It uses the existing listener but a distinct NAS key and /32 address.
+[Peer]
+PublicKey = <UPLOAD_NAS_PUBLIC_KEY>
+AllowedIPs = <UPLOAD_NAS_WG_ADDRESS>/32

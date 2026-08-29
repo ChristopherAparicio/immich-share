@@ -18,6 +18,7 @@ change, and never ask the operator to paste a private key or API key into chat.
 | Immich | Scoped API-key file path; shared-link and album-read permissions |
 | Sharing policy | Default TTL, downloads enabled or disabled, gallery/download quality |
 | ZIP policy | Maximum ZIP size, free-disk reserve, cache TTL, bandwidth and concurrency |
+| Optional upload | Whether `/drop` is enabled; dedicated NAS dataset/state paths and filesystem quota; media, file/count/byte, chunk, reserve and concurrency limits |
 | Monitor | Loopback or encrypted-tailnet bind, allowed hostnames, and local password-file path |
 
 Recommended defaults for a small VPS are already included in the repository:
@@ -29,6 +30,12 @@ The repository currently provides an operations CLI, not an interactive
 installer. Deployment therefore follows this runbook and copies
 `config.example.ini`, `vps/.env.example`, and `nas/.env.example`. The CLI then
 manages shares with `open`, `list`, `adopt`, `sync`, `close`, and `sweep`.
+
+The upload-drop deployment is optional and remains disabled until its separate
+Compose overlays are selected, an immutable application image is supplied, a
+controlled invitation exists, the NAS upload filter passes its doctor, and the
+generic Caddy snippet is installed. It uses the same public domain under
+`/drop`; there is no additional DNS record or public firewall port.
 
 ## 1. Order the VPS and configure DNS
 
@@ -97,8 +104,18 @@ Admin <WG_CONTROLLER_ADDRESS> ── WireGuard ──┐
 NAS   <WG_NAS_ADDRESS>        ── WireGuard ──┘
 ```
 
-Choose the private subnet and all three addresses locally. Do not commit those
-values; replace the `<WG_...>` placeholders only in deployed copies.
+Optional upload support adds a separate NAS peer to the same VPS hub. It must
+not reuse the read-side key, address, container namespace, or Docker network:
+
+```text
+NAS read   <WG_NAS_ADDRESS>        ──┐
+NAS upload <UPLOAD_NAS_WG_ADDRESS> ──┼── VPS <WG_VPS_ADDRESS>
+Admin      <WG_CONTROLLER_ADDRESS> ──┘
+```
+
+Choose the private subnet, the three base addresses, and the optional upload
+address locally. Do not commit those values; replace placeholders only in
+deployed copies.
 
 1. Generate one key pair per machine with
    `wg genkey | tee private.key | wg pubkey > public.key`.
@@ -128,7 +145,12 @@ values; replace the `<WG_...>` placeholders only in deployed copies.
    only in the ignored `.env`. The WireGuard container keeps only
    `NET_ADMIN` and `DAC_READ_SEARCH`; the latter is required to read the
    operator-owned `wg0-nas.conf` kept at mode 0600 through its single
-   read-only bind mount. Create `logs/` owned by UID/GID 101 with mode
+   read-only bind mount. It resolves `immich_server` only during bootstrap,
+   closes Docker DNS and exposes that exact upstream to nginx through the
+   loopback-only `127.0.0.1:18080` relay. If an Immich upgrade recreates the
+   server with a new internal address, restart `wg-tunnel` and its filter and
+   rerun `doctor` before reopening a share; a stale relay fails closed. Create
+   `logs/` owned by UID/GID 101 with mode
    0750 and grant the
    tripwire account read access without making it world-readable. Inside the
    tunnel container, verify `sysctl net.ipv4.ip_forward` returns `0`.
@@ -137,6 +159,11 @@ values; replace the `<WG_...>` placeholders only in deployed copies.
    `docker compose up -d --no-deps --force-recreate nginx-filter`; an nginx
    reload can otherwise keep reading the previous bind-mounted inode. Repeat
    the query-sentinel log test after every filter update.
+   For optional uploads, generate a fourth key pair and use
+   `nas/wg0-upload-nas.conf` for the second NAS container. Add its public key and
+   unique `/32` address by merging
+   `vps/wireguard/upload-peer.conf.example` into the deployed VPS `wg0.conf`.
+   Do not reuse the read-side key or address. No new UDP listener is needed.
 4. Import `macmini/wg0-macmini.conf` on the admin machine and apply
    `macmini/pf-wireguard.md`.
 5. From the NAS and admin machine, verify `ping <WG_VPS_ADDRESS>`. Inspect handshakes
@@ -154,7 +181,8 @@ NAS shell or arbitrary Docker commands. Install `nas/forward-command.sh` as
 root-owned `/usr/local/sbin/immich-share-forward-command`, create a dedicated
 `immich-share-gate` account, and do **not** add it to the root-equivalent Docker
 group. Validate and install `nas/sudoers-forward-gate.example` so the account
-may only start, stop, or inspect `wg-nginx-filter`; prefix the key in
+may invoke only the exact read filter, upload filter, doctor and invitation
+helper actions listed there; prefix the key in
 `authorized_keys` exactly as shown by `nas/ssh-forward-gate.example`. Merge
 `nas/ssh-config-controller.example` on the controller. Test `forward status`,
 then verify that `uname`, an interactive shell, port forwarding, agent
@@ -167,6 +195,31 @@ Install `nas/security-doctor.sh` as root-owned mode 0755 at
 `/usr/local/sbin/immich-share-security-doctor`. The forced `doctor` command is
 read-only and returns only a pass/fail summary; it does not expose paths,
 addresses, container IDs, or log contents.
+
+When uploads are installed, also install `nas/upload-security-doctor.sh` as
+root-owned mode 0755 at
+`/usr/local/sbin/immich-share-upload-security-doctor`. The same restricted key
+may then run only the exact upload lifecycle and invitation commands listed in
+the forced-command gate; the account still receives neither a shell nor
+Docker-group membership. Install the JSON bridge root-owned as well:
+
+```bash
+/usr/bin/python3 --version  # Resolve this trusted absolute path first.
+sudo install -o root -g root -m 0755 nas/upload-admin-helper.py \
+  /usr/local/sbin/immich-share-upload-admin
+sudo install -o root -g root -m 0755 nas/upload-security-doctor.sh \
+  /usr/local/sbin/immich-share-upload-security-doctor
+sudo visudo -cf nas/sudoers-forward-gate.example
+```
+
+The bridge fixes the container name and executes only `python -m app.cli
+--json` through Docker argv. It also pins the local Unix Docker socket and
+replaces the inherited environment, so sudo policy cannot redirect the client
+with `DOCKER_HOST`, a context or a configuration directory. It never invokes a
+shell, accepts a container name or executable, or exposes `init`/`purge`. Set
+`expected_wireguard_peers = 3` in
+the controller's private configuration once the upload peer is expected to
+remain connected.
 
 ## 4. Move SSH into WireGuard
 
@@ -222,7 +275,8 @@ On the VPS:
 # here and copy the current /data and /config contents out of the running caddy
 # container before replacing it. This preserves ACME account and certificate
 # state and avoids unnecessary reissuance.
-sudo mkdir -p /srv/photo-share/shares.d /srv/photo-share/zip-staging \
+sudo mkdir -p /srv/photo-share/shares.d /srv/photo-share/drops.d \
+  /srv/photo-share/zip-staging \
   /srv/photo-share/caddy-data /srv/photo-share/caddy-config
 sudo chown -R "$USER" /srv/photo-share
 sudo chown 1000:1000 /srv/photo-share/zip-staging \
@@ -239,12 +293,16 @@ Copy these repository files to `/srv/photo-share/`:
 
 ```text
 vps/docker-compose.yml
+vps/docker-compose.upload.yml        # optional
 vps/Dockerfile.caddy
 vps/Dockerfile.nginx
 vps/Caddyfile
 vps/ipp-config.json
 vps/download-guard.conf.template
 vps/download-guard-nginx.conf
+vps/upload-guard.conf.template       # optional
+vps/upload-guard-nginx.conf          # optional
+vps/drop-portal.caddy.template       # optional; never install directly
 vps/zip-*.html
 ```
 
@@ -268,6 +326,201 @@ Images and upstream versions are pinned. IPP source and releases live in the
 separate AGPL fork linked from `THIRD_PARTY_NOTICES.md`. Updating IPP is an
 explicit operation: validate the fork release, change the immutable GHCR
 digest, and retest ZIP responses for 200, 206, 413, 429, and 507.
+
+### Optional upload-drop deployment
+
+Do not add upload services to the base gallery Compose invocation. This keeps a
+read-only installation unchanged and prevents an ordinary IPP upgrade from
+starting or reconfiguring the write path.
+
+On the NAS, copy `docker-compose.upload.yml`, `wg0-upload-nas.conf`,
+`upload-filter.conf`, `upload-security-doctor.sh`, and the existing pinned
+Dockerfiles/entrypoints. Create a dedicated external network and two private
+host directories or datasets:
+
+```bash
+docker network create --internal immich_drop
+chmod 0600 wg0-upload-nas.conf
+sudo install -d -o 65532 -g 65532 -m 0700 \
+  <UPLOAD_DROP_STORAGE_PATH> <UPLOAD_DROP_STATE_PATH>
+sudo install -o 65532 -g 65532 -m 0400 /dev/null \
+  <UPLOAD_DROP_SESSION_SECRET_FILE>
+# Write a printable high-entropy secret; the application reads it as UTF-8.
+# It never appears in argv, terminal output, Git, or chat.
+openssl rand -base64 48 \
+  | sudo tee <UPLOAD_DROP_SESSION_SECRET_FILE> >/dev/null
+sudo install -d -o 101 -g 101 -m 0750 upload-logs
+```
+
+Apply a hard filesystem quota to `<UPLOAD_DROP_STORAGE_PATH>` where the NAS
+supports datasets, shared-folder quotas, ZFS or Btrfs quotas. Keep it outside
+every Immich bind mount and external library. Do not back up partial uploads as
+trusted photos.
+
+`immich_drop` must remain an internal network. The optional Compose file creates
+a second bridge joined only by `wg-upload-tunnel`. The WireGuard entrypoint
+installs OUTPUT-DROP before resolving anything, temporarily permits Docker DNS
+to resolve `upload-drop`, starts a loopback-only relay on `127.0.0.1:18080` to
+that exact address and port, then closes DNS. Only the literal public WireGuard
+endpoint over its configured UDP port, established replies and the resolved
+`upload-drop:8080` address remain reachable. `upload-drop` has no direct
+Internet route. The nginx filter shares the locked WireGuard network namespace
+and connects only to the loopback relay, so its separate `/etc/hosts` and
+resolver configuration cannot reopen DNS or general LAN/Internet egress.
+If Docker recreates `upload-drop` with a new internal address, restart
+`wg-upload-tunnel` and its filter, then rerun the upload doctor before reopening
+the Caddy snippet. A stale relay fails closed; it never falls back to DNS.
+
+In the ignored `nas/.env`, set both directory paths, the session-secret file
+path, public HTTPS origin without `/drop`, private upload WireGuard address,
+policy ceilings, and `UPLOAD_DROP_IMAGE`. The image value is deliberately
+required and must include an immutable `@sha256:` digest. The reviewed
+release is `ghcr.io/christopheraparicio/immich-drop:v0.1.1` at digest
+`sha256:85f667d0f6fc18dec813dcb6dc53ac81d9db0de8a55b82d8303883f0f8bae376`;
+verify the release provenance before copying a newer digest.
+
+Validate without opening a public route:
+
+```bash
+docker compose -f docker-compose.upload.yml config --quiet
+docker compose -f docker-compose.upload.yml build \
+  upload-wireguard upload-filter upload-logrotate
+# The marker and state database are created only after the operator has checked
+# that both bind mounts point at the intended empty/private NAS datasets.
+docker compose -f docker-compose.upload.yml run --rm --no-deps \
+  upload-drop python dropctl.py init --yes
+docker compose -f docker-compose.upload.yml up -d
+docker stop --time 10 wg-upload-filter
+```
+
+The application remains isolated on internal `immich_drop`; PostgreSQL, Redis,
+`immich_server`, and the read-side `wg-tunnel` must be absent. Verify
+`net.ipv4.ip_forward=0` in `wg-upload-tunnel`.
+
+On the VPS, set `UPLOAD_NAS_WG_ADDRESS` and the upload guard ceilings in the
+ignored `.env`, then validate the optional edge without installing a Caddy
+handler:
+
+```bash
+docker compose -f docker-compose.upload.yml config --quiet
+docker compose -f docker-compose.upload.yml up -d --build upload-guard
+docker compose -f docker-compose.upload.yml exec -T upload-guard nginx -t
+```
+
+`drop-portal.caddy.template` is a template, not an always-on configuration.
+For a controlled invitation, use this fail-closed order:
+
+1. Create the password-protected, finite invitation through the application's
+   private administration interface. Never expose an admin route through nginx.
+2. Start `wg-upload-filter` through the forced `upload on` command.
+3. Run forced `upload doctor`; it certifies the second network, container
+   hardening, writable mounts, private `/healthz`, exact refusal, and live log
+   redaction without printing addresses or paths.
+4. Copy the template atomically to `drops.d/00-drop.caddy`, validate Caddy, then
+   reload. Caddy now exposes only `/drop/i/<token>`, the exact local assets
+   `app.js`, `drop.css`, and `favicon.png`, the
+   password/policy/create endpoints, and session-owned HEAD/PATCH/DELETE upload
+   endpoints. `/healthz` and every admin route remain private.
+
+On the VPS, the atomic activation itself can be performed without exposing a
+partially written snippet. Caddy keeps serving its previous in-memory config if
+validation fails:
+
+```bash
+cd /srv/photo-share
+install -m 0600 drop-portal.caddy.template drops.d/.00-drop.caddy.pending
+mv drops.d/.00-drop.caddy.pending drops.d/00-drop.caddy
+docker compose exec -T caddy caddy validate --config /etc/caddy/Caddyfile
+docker compose exec -T caddy caddy reload --config /etc/caddy/Caddyfile
+```
+
+Close in the reverse safety order: revoke the invitation in the application,
+move the Caddy snippet out of the imported `*.caddy` set, validate and reload,
+then run `upload off` after the last active
+invitation. Expiry is enforced by the application on every request; a sweep is
+cleanup and convergence, never the only expiry mechanism.
+
+```bash
+cd /srv/photo-share
+mv drops.d/00-drop.caddy drops.d/.00-drop.caddy.disabled
+docker compose exec -T caddy caddy validate --config /etc/caddy/Caddyfile
+docker compose exec -T caddy caddy reload --config /etc/caddy/Caddyfile
+```
+
+The NAS operator can use the application CLI locally without exposing an admin
+HTTP route. Prefer a hidden custom password and select the least permissive
+media profile:
+
+```bash
+docker compose -f docker-compose.upload.yml exec upload-drop \
+  python dropctl.py open --label "Event incoming" --folder "Event incoming" \
+  --profile photos --ttl 24h --max-file 512MiB --max-files 200 \
+  --quota 1GiB --prompt-password
+docker compose -f docker-compose.upload.yml exec upload-drop python dropctl.py list
+docker compose -f docker-compose.upload.yml exec upload-drop python dropctl.py close <INVITATION_ID>
+docker compose -f docker-compose.upload.yml exec upload-drop python dropctl.py sweep
+```
+
+### Remote invitation administration from the separate controller
+
+The forced SSH key also supports exactly `upload admin open`, `list`, `close`,
+and `sweep`. Each command requires one UTF-8 JSON object on stdin, limited to
+4,096 bytes and completed within ten seconds. Duplicate keys, unknown fields,
+control characters, partial IDs and booleans used as integers are rejected
+before Docker runs. No password is
+accepted in JSON or argv: `open` generates a strong password inside the NAS
+container and returns it once in the JSON response. Treat that response as a
+secret and do not log it, paste it into chat, or save it in shell history.
+
+```bash
+# Creates only the private backend invitation. It does not start the filter or
+# install the public Caddy snippet.
+printf '%s' '{"label":"Family event","profile":"photos","ttlSeconds":86400}' \
+  | ssh nas-photo-gate 'upload admin open'
+
+printf '%s' '{}' | ssh nas-photo-gate 'upload admin list'
+
+# close requires the complete canonical UUID returned by open/list.
+printf '%s' '{"inviteId":"01234567-89ab-cdef-0123-456789abcdef"}' \
+  | ssh nas-photo-gate 'upload admin close'
+
+printf '%s' '{}' | ssh nas-photo-gate 'upload admin sweep'
+```
+
+`open` requires `label`. Optional fields are `folder`, `profile`, `ttlSeconds`,
+`maxFileBytes`, `maxFiles`, and `quotaBytes`. Remote administration deliberately
+caps TTL at seven days, individual files at 512 MiB, 500 files, and invitation
+quota at 1 GiB; TTL must be whole minutes. Profiles are `photos`, `videos`,
+`both`, or `live`. These three resource ceilings are always sent explicitly,
+including when omitted from JSON, so raising container defaults cannot bypass
+the remote-administration policy. Use the local interactive CLI when a custom
+password is required.
+
+After remote `open`, keep following the fail-closed sequence: `upload on`,
+`upload doctor`, then atomically install and reload the VPS Caddy snippet.
+Remote `close` revokes the invitation in the backend only; remove and reload
+the Caddy snippet before `upload off` when the last invitation closes. The
+helper never changes public routing or starts a container implicitly.
+
+The profile may be `photos`, `videos`, `photos+videos`, or `photos+live`; RAW is
+not accepted by the initial public contract. The backend must verify both the
+normalized extension and media signature. The folder is a display/manifest
+label under a server-generated invitation directory, never a visitor-supplied
+host path.
+
+The `PATCH` body is a raw, resumable chunk capped at eight MiB by the
+application and nine MiB by both nginx guards. Both proxies use
+`proxy_request_buffering off`; their only cache directories are bounded tmpfs,
+so the VPS has no persistent upload copy. `HEAD` returns the committed offset,
+and the final chunk is atomically promoted by the application. There is no ZIP,
+archive extraction, public listing, or public download route.
+
+Each application PATCH has an absolute 180-second deadline in addition to the
+proxy inactivity timeouts; a slow-drip client receives 408 and cannot retain
+one of the three upload slots indefinitely. The application also owns the
+single internal incomplete-upload sweeper, every 300 seconds by default. Do not
+install a second cron/timer sweeper; operator `sweep` remains an explicit
+maintenance/reconciliation command, not another scheduled owner.
 
 ### Download limits and resumable ZIPs
 
@@ -441,6 +694,24 @@ From an external connection such as cellular data:
 - [ ] The gallery reveals no GPS/EXIF fields.
 - [ ] `immich-share doctor` reports that every read-only check passed.
 
+When the optional upload stack is installed, repeat from cellular data with a
+short-lived, non-sensitive invitation:
+
+- [ ] With an empty `drops.d/`, `/drop/i/<token>` returns 404.
+- [ ] A wrong password reveals neither policy nor upload state; policy returns
+      401 until the password-bound session is established.
+- [ ] Only the configured photo/video policy is accepted; extension and media
+      signature must both match. Archives, SVG, PDF, and executables fail.
+- [ ] Per-file, file-count, invitation-byte, global-byte, disk-reserve and
+      concurrency limits fail closed without leaving an unaccounted partial.
+- [ ] Interrupting a chunk and resuming from the `HEAD` offset works on iOS.
+- [ ] Expiry blocks new and resumed chunks even before a sweep runs.
+- [ ] No route lists or downloads received files; `/healthz`, admin paths and
+      unexpected methods return 404 externally.
+- [ ] The session cookie is `Secure`, `HttpOnly`, `SameSite` and scoped to
+      `/drop`; no frontend asset, telemetry or CDN request leaves the domain.
+- [ ] Forced `upload doctor` passes while the controlled invitation is active.
+
 In the separate-controller profile, run `doctor` while the controlled test
 share is active. Its forced NAS check tests the effective nginx configuration,
 a forbidden route, and a fresh query sentinel; it deliberately fails when the
@@ -458,11 +729,39 @@ From the VPS:
       `immich-share-logrotate` container is running.
 - [ ] The dedicated `immich_share` Docker network contains only `wg-tunnel`
       and `immich_server`; it contains no database or Redis container.
+- [ ] The share doctor certifies exactly four steady-state OUTPUT accepts:
+      loopback, established replies, the literal WireGuard UDP endpoint, and
+      the current `immich_server:2283` address. nginx reaches it only through
+      the `127.0.0.1:18080` relay and public DNS resolution fails.
 - [ ] `ping <WG_CONTROLLER_ADDRESS>` and `nc -vz <WG_CONTROLLER_ADDRESS> 22`
       fail because of the admin-host
       packet-filter rule.
 - [ ] After closing every share, `curl http://<WG_NAS_ADDRESS>:2283/` is refused because
       the NAS forward is stopped.
+
+For the optional upload peer, also verify from the VPS:
+
+- [ ] The `immich_drop` network contains only `wg-upload-tunnel` and
+      `immich-upload-drop`; it has no Immich, PostgreSQL, Redis, read tunnel or
+      unrelated NAS service.
+- [ ] `immich_drop` reports `Internal: true`; the separate egress network
+      contains only `wg-upload-tunnel`, and `immich-upload-drop` is absent from
+      it.
+- [ ] The upload doctor reports OUTPUT-DROP, certifies that the only four
+      steady-state ACCEPT rules are loopback, established replies, the literal
+      WireGuard UDP endpoint and the exact `upload-drop:8080` address, reaches
+      that service through `127.0.0.1:18080` from the nginx sidecar, and refuses
+      public DNS plus external and LAN connection probes.
+- [ ] `upload-guard` has no published port or persistent writable mount and can
+      reach only the dedicated upload filter address through WireGuard.
+- [ ] The NAS upload filter allows only the documented GET/POST/HEAD/PATCH/DELETE
+      contract; probes for `/healthz`, `/api`, `/admin`, traversal and unexpected
+      methods return 404.
+- [ ] A request containing a unique invitation-token/query sentinel leaves
+      neither value in Caddy, upload-guard, NAS filter or application logs.
+      Upload logs contain only normalized action, status and byte counts.
+- [ ] With no active invitation, `drops.d/` is empty and `wg-upload-filter` is
+      stopped; the read-only gallery remains unaffected.
 
 ## 8. Operations
 
@@ -473,6 +772,14 @@ From the VPS:
   service remain active; never switch the route log format back to `$request`
   or `$request_uri`.
 - Alert on proxy failure, tunnel failure, disk reserve, and tripwire events.
+- Treat the upload dataset quota, application global budget and disk reserve as
+  independent ceilings. Alert before any one is exhausted; never weaken the
+  fixed reserve to make a current invitation fit.
+- Review every new upload application route against both nginx allowlists
+  before upgrading its immutable image. Unknown routes must fail 404 first.
+  Re-run the token/query log sentinel after every application, Caddy or nginx
+  change. Keep partial-data cleanup active, but never run two invitation sweep
+  owners during a controller migration.
 - Keep the monitor on loopback where possible. It always requires a mode-0600
   password file and rate-limits failed authentication. A non-loopback bind also
   requires `allow_http_over_private_tunnel = true`, and is valid only inside an

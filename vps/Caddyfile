@@ -10,6 +10,17 @@
 	servers :443 {
 		protocols h1 h2
 	}
+
+	# Reverse-proxy failures are emitted by Caddy's runtime logger, separately
+	# from the redacted site access log below. Apply the same field filter so an
+	# unavailable upstream cannot place a share key or upload token in Docker
+	# logs through request.uri.
+	log default {
+		output stderr
+		format filter {
+			request>uri replace REDACTED
+		}
+	}
 }
 
 {$PUBLIC_DOMAIN:photos.example.com} {
@@ -62,6 +73,40 @@
 			events 6
 			window 1m
 		}
+		# Upload authentication receives a deliberately small brute-force budget.
+		zone drop_auth {
+			match {
+				method POST
+				path /drop/api/invites/*/unlock
+			}
+			key {remote_host}
+			ipv6_prefix 64
+			events 10
+			window 1m
+		}
+		# Upload creation is more expensive than status/resume requests.
+		zone drop_create {
+			match {
+				method POST
+				path /drop/api/invites/*/uploads
+			}
+			key {remote_host}
+			ipv6_prefix 64
+			events 20
+			window 1m
+		}
+		# Eight-MiB resumable chunks naturally provide fairness. This guards request
+		# starts; nginx owns long-lived concurrency and the app owns byte quotas.
+		zone drop_chunks {
+			match {
+				method HEAD PATCH DELETE
+				path /drop/api/uploads/*
+			}
+			key {remote_host}
+			ipv6_prefix 64
+			events 120
+			window 1m
+		}
 	}
 
 	# Browser defenses: strict TLS, no framing, and no share-key leakage in Referer.
@@ -76,6 +121,10 @@
 
 	# One generated file per active share. An empty directory exposes no handler.
 	import /etc/caddy/shares.d/*.caddy
+	# A single generic upload snippet is installed only while at least one
+	# invitation is active. The backend enforces each invitation's expiry on
+	# every request; an empty directory therefore remains closed by default.
+	import /etc/caddy/drops.d/*.caddy
 
 	# Keep short-lived request telemetry without recording credential-bearing
 	# share keys or secret query values. Generated share routes append only a

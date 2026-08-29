@@ -1,0 +1,39 @@
+# Install as drops.d/00-drop.caddy only while at least one upload invitation is
+# active. The upload service still validates the bearer token, password-bound
+# session, expiry, policy, quota, and upload ownership on every request.
+@drop_small {
+	method GET HEAD POST DELETE
+	path /drop/i/* /drop/assets/app.js /drop/assets/drop.css /drop/assets/favicon.png /drop/api/invites/* /drop/api/uploads/*
+}
+handle @drop_small {
+	request_body {
+		max_size 4KB
+	}
+	reverse_proxy upload-guard:8081 {
+		# Overwrite both headers at the only public trust transition. Neither the
+		# browser nor an earlier proxy may select its quota identity or bypass the
+		# private edge guard.
+		header_up X-Client-IP {remote_host}
+		header_up X-Upload-Guard caddy-internal-v1
+		header_up X-Forwarded-Proto https
+		header_down Content-Security-Policy "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'self'; object-src 'none'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'"
+	}
+}
+
+@drop_chunk {
+	method PATCH
+	path /drop/api/uploads/*
+}
+handle @drop_chunk {
+	# The application commits raw eight-MiB chunks. The small excess covers
+	# transport framing while still rejecting accidental whole-file requests.
+	request_body {
+		max_size 9MB
+	}
+	reverse_proxy upload-guard:8081 {
+		header_up X-Client-IP {remote_host}
+		header_up X-Upload-Guard caddy-internal-v1
+		header_up X-Forwarded-Proto https
+		header_down Content-Security-Policy "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'self'; object-src 'none'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'"
+	}
+}

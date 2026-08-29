@@ -16,6 +16,7 @@ services:
     volumes:
       - ./Caddyfile:/etc/caddy/Caddyfile:ro
       - ./shares.d:/etc/caddy/shares.d:ro   # Written by immich-share over SSH.
+      - ./drops.d:/etc/caddy/drops.d:ro     # Empty means upload is public 404.
       - ./caddy-data:/data
       - ./caddy-config:/config
     user: "1000:1000"

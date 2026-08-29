@@ -8,16 +8,40 @@ container=wg-nginx-filter
 
 case "${SSH_ORIGINAL_COMMAND:-}" in
     "forward on")
-        exec sudo -n /usr/bin/docker start "$container"
+        exec /usr/bin/sudo -n /usr/bin/docker start "$container"
         ;;
     "forward off")
-        exec sudo -n /usr/bin/docker stop --time 10 "$container"
+        exec /usr/bin/sudo -n /usr/bin/docker stop --time 10 "$container"
         ;;
     "forward status")
-        exec sudo -n /usr/bin/docker inspect --format '{{.State.Running}}' "$container"
+        exec /usr/bin/sudo -n /usr/bin/docker inspect --format '{{.State.Running}}' "$container"
         ;;
     "doctor")
-        exec sudo -n /usr/local/sbin/immich-share-security-doctor
+        exec /usr/bin/sudo -n /usr/local/sbin/immich-share-security-doctor
+        ;;
+    "upload on")
+        exec /usr/bin/sudo -n /usr/bin/docker start wg-upload-filter
+        ;;
+    "upload off")
+        exec /usr/bin/sudo -n /usr/bin/docker stop --time 10 wg-upload-filter
+        ;;
+    "upload status")
+        exec /usr/bin/sudo -n /usr/bin/docker inspect --format '{{.State.Running}}' wg-upload-filter
+        ;;
+    "upload doctor")
+        exec /usr/bin/sudo -n /usr/local/sbin/immich-share-upload-security-doctor
+        ;;
+    "upload admin open")
+        exec /usr/bin/sudo -n /usr/local/sbin/immich-share-upload-admin open
+        ;;
+    "upload admin list")
+        exec /usr/bin/sudo -n /usr/local/sbin/immich-share-upload-admin list
+        ;;
+    "upload admin close")
+        exec /usr/bin/sudo -n /usr/local/sbin/immich-share-upload-admin close
+        ;;
+    "upload admin sweep")
+        exec /usr/bin/sudo -n /usr/local/sbin/immich-share-upload-admin sweep
         ;;
     *)
         printf 'Denied command\n' >&2

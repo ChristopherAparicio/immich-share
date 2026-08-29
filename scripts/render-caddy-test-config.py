@@ -26,5 +26,10 @@ snippet = module.render_share_snippet(
     "CI syntax test",
     "2026-08-28T00:00:00Z",
 )
+drop_snippet = (ROOT / "vps" / "drop-portal.caddy.template").read_text()
 caddyfile = (ROOT / "vps" / "Caddyfile").read_text()
-print(caddyfile.replace("\timport /etc/caddy/shares.d/*.caddy", snippet))
+print(
+    caddyfile.replace("\timport /etc/caddy/shares.d/*.caddy", snippet).replace(
+        "\timport /etc/caddy/drops.d/*.caddy", drop_snippet
+    )
+)

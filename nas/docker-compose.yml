@@ -7,7 +7,7 @@ services:
     build:
       context: .
       dockerfile: Dockerfile.wireguard
-    image: immich-share-wireguard:1.0.20260827-r0
+    image: immich-share-wireguard:1.1.20260829-r0
     container_name: wg-tunnel
     cap_add:
       - NET_ADMIN
@@ -22,6 +22,11 @@ services:
     sysctls:
       # Critical: no forwarding, so the VPS cannot pivot into the home LAN.
       - net.ipv4.ip_forward=0
+    environment:
+      WG_OUTPUT_LOCKDOWN: "true"
+      WG_INTERNAL_UPSTREAM_HOST: immich_server
+      WG_INTERNAL_UPSTREAM_PORT: "2283"
+      WG_LOCAL_PROXY_PORT: "18080"
     volumes:
       - ./wg0-nas.conf:/config/wg0.conf:ro
     read_only: true
@@ -55,8 +60,9 @@ services:
     user: "101:101"
     network_mode: service:wireguard
     environment:
-      NGINX_ENVSUBST_FILTER: "^NAS_WG_ADDRESS$"
+      NGINX_ENVSUBST_FILTER: "^(NAS_WG_ADDRESS|IMMICH_UPSTREAM)$"
       NAS_WG_ADDRESS: ${NAS_WG_ADDRESS:?set NAS_WG_ADDRESS in .env}
+      IMMICH_UPSTREAM: 127.0.0.1:18080
     volumes:
       - ./nginx-filter.conf:/etc/nginx/templates/default.conf.template:ro
       - ./logs:/var/log/nginx

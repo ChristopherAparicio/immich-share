@@ -1,0 +1,49 @@
+# Optional upload edge. Keep it out of the base gallery Compose file so normal
+# read-only deployments neither require upload settings nor gain a write path.
+services:
+  upload-guard:
+    build:
+      context: .
+      dockerfile: Dockerfile.nginx
+    image: immich-share-nginx:1.31.4-hardened
+    container_name: upload-guard
+    init: true
+    restart: unless-stopped
+    user: "101:101"
+    environment:
+      NGINX_ENVSUBST_FILTER: "^UPLOAD_"
+      UPLOAD_NAS_WG_ADDRESS: ${UPLOAD_NAS_WG_ADDRESS:?set UPLOAD_NAS_WG_ADDRESS in .env}
+      UPLOAD_MAX_BODY: ${UPLOAD_MAX_BODY:-9m}
+      UPLOAD_REQUEST_RATE: ${UPLOAD_REQUEST_RATE:-30r/s}
+      UPLOAD_PER_IP: ${UPLOAD_PER_IP:-2}
+      UPLOAD_GLOBAL: ${UPLOAD_GLOBAL:-6}
+    volumes:
+      - ./upload-guard-nginx.conf:/etc/nginx/nginx.conf:ro
+      - ./upload-guard.conf.template:/etc/nginx/templates/default.conf.template:ro
+    read_only: true
+    tmpfs:
+      - /etc/nginx/conf.d:size=1m,mode=0755,uid=101,gid=101,noexec,nosuid,nodev
+      - /var/cache/nginx:size=16m,mode=0755,uid=101,gid=101,noexec,nosuid,nodev
+      - /var/run:size=1m,mode=0755,uid=101,gid=101,noexec,nosuid,nodev
+      - /tmp:size=1m,mode=1777,uid=101,gid=101,noexec,nosuid,nodev
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    mem_limit: ${UPLOAD_GUARD_MEMORY_LIMIT:-64m}
+    cpus: ${UPLOAD_GUARD_CPU_LIMIT:-0.25}
+    pids_limit: ${UPLOAD_GUARD_PIDS_LIMIT:-48}
+    stop_grace_period: 10s
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+    networks:
+      - app_net
+      - tunnel_net
+
+networks:
+  app_net:
+    internal: true
+  tunnel_net:
