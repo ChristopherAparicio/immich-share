@@ -29,10 +29,12 @@ test -n "$port"
 json_status=$(head -c 5000 /dev/zero | tr '\0' x | curl -s -o /dev/null -w '%{http_code}' \
     -H 'X-Upload-Guard: caddy-internal-v1' -H 'Content-Type: application/json' \
     --data-binary @- \
-    'http://127.0.0.1:'"$port"'/drop/api/invites/UploadTokenSentinel1234567890abcdef/unlock')
+    'http://127.0.0.1:'"$port"'/drop/api/invites/UploadTokenSentinel1234567890abcdef/unlock' \
+    || true)
 chunk_status=$(head -c 5000 /dev/zero | curl -s -o /dev/null -w '%{http_code}' \
     -X PATCH -H 'X-Upload-Guard: caddy-internal-v1' --data-binary @- \
-    'http://127.0.0.1:'"$port"'/drop/api/uploads/01234567-89ab-cdef-0123-456789abcdef')
+    'http://127.0.0.1:'"$port"'/drop/api/uploads/01234567-89ab-cdef-0123-456789abcdef' \
+    || true)
 oversized_status=$(head -c 10000000 /dev/zero | curl -s -o /dev/null -w '%{http_code}' \
     -X PATCH -H 'X-Upload-Guard: caddy-internal-v1' --data-binary @- \
     'http://127.0.0.1:'"$port"'/drop/api/uploads/01234567-89ab-cdef-0123-456789abcdef' \
