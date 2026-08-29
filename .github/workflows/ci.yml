@@ -19,7 +19,13 @@ jobs:
     timeout-minutes: 20
     env:
       NAS_WG_ADDRESS: 192.0.2.10
+      UPLOAD_NAS_WG_ADDRESS: 192.0.2.11
       PUBLIC_DOMAIN: photos.example.com
+      UPLOAD_DROP_IMAGE: example.invalid/immich-upload-drop:test@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+      UPLOAD_DROP_STORAGE_PATH: /tmp/immich-upload-drop-data
+      UPLOAD_DROP_STATE_PATH: /tmp/immich-upload-drop-state
+      UPLOAD_DROP_SESSION_SECRET_FILE: /tmp/immich-upload-drop-session-secret
+      UPLOAD_PUBLIC_BASE_URL: https://photos.example.com
 
     steps:
       - name: Checkout
@@ -37,26 +43,38 @@ jobs:
           python3 -m py_compile \
             immich-share \
             macmini/photo-share-monitor.py \
-            scripts/benchmark-downloads.py
+            scripts/benchmark-downloads.py \
+            nas/upload-admin-helper.py \
+            scripts/test-upload-admin-helper.py
           python3 scripts/test-immich-share.py
+          python3 scripts/test-upload-admin-helper.py
+          python3 scripts/test-upload-deployment.py
           python3 scripts/check-public-tree.py
+          sh -n nas/forward-command.sh nas/security-doctor.sh \
+            nas/upload-security-doctor.sh nas/wireguard-entrypoint.sh \
+            scripts/test-wireguard-egress-lockdown.sh
 
       - name: Validate Compose and build edge images
         run: |
-          mkdir -p vps/shares.d vps/caddy-data vps/caddy-config
+          mkdir -p vps/shares.d vps/drops.d vps/caddy-data vps/caddy-config
           sudo chown -R 1000:1000 vps/caddy-data vps/caddy-config
           docker compose -f vps/docker-compose.yml config --quiet
+          docker compose -f vps/docker-compose.upload.yml config --quiet
           docker compose -f vps/docker-compose.yml build caddy download-guard
+          docker compose -f vps/docker-compose.upload.yml build upload-guard
 
       - name: Validate Compose and build NAS images
         run: |
           docker compose -f nas/docker-compose.yml config --quiet
+          docker compose -f nas/docker-compose.upload.yml config --quiet
           docker compose -f nas/docker-compose.yml build wireguard nginx-filter logrotate
+          docker compose -f nas/docker-compose.upload.yml build \
+            upload-wireguard upload-filter upload-logrotate
 
       - name: Scan WireGuard image
         uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
         with:
-          image-ref: immich-share-wireguard:1.0.20260827-r0
+          image-ref: immich-share-wireguard:1.1.20260829-r0
           format: table
           exit-code: 1
           ignore-unfixed: false
@@ -101,9 +119,38 @@ jobs:
             -v "$PWD/vps/download-guard-nginx.conf:/etc/nginx/nginx.conf:ro" \
             -v "$PWD/vps/download-guard.conf.template:/etc/nginx/templates/default.conf.template:ro" \
             immich-share-nginx:1.31.4-hardened nginx -t
+          docker run --rm \
+            -e 'NGINX_ENVSUBST_FILTER=^UPLOAD_' \
+            -e UPLOAD_NAS_WG_ADDRESS=192.0.2.11 \
+            -e UPLOAD_MAX_BODY=9m \
+            -e UPLOAD_REQUEST_RATE=30r/s \
+            -e UPLOAD_PER_IP=2 \
+            -e UPLOAD_GLOBAL=6 \
+            -v "$PWD/vps/upload-guard-nginx.conf:/etc/nginx/nginx.conf:ro" \
+            -v "$PWD/vps/upload-guard.conf.template:/etc/nginx/templates/default.conf.template:ro" \
+            immich-share-nginx:1.31.4-hardened nginx -t
+          docker run --rm --add-host upload-drop:127.0.0.1 \
+            -e 'NGINX_ENVSUBST_FILTER=^(UPLOAD_|DROP_UPSTREAM$)' \
+            -e UPLOAD_NAS_WG_ADDRESS=0.0.0.0 \
+            -e DROP_UPSTREAM=upload-drop:8080 \
+            -e UPLOAD_FILTER_MAX_BODY=9m \
+            -e UPLOAD_FILTER_REQUEST_RATE=30r/s \
+            -e UPLOAD_FILTER_PER_IP=2 \
+            -e UPLOAD_FILTER_GLOBAL=6 \
+            -v "$PWD/nas/upload-filter.conf:/etc/nginx/templates/default.conf.template:ro" \
+            immich-share-nginx:1.31.4-hardened nginx -t
+
+      - name: Verify WireGuard namespace output allowlist
+        run: scripts/test-wireguard-egress-lockdown.sh
 
       - name: Verify download-guard upstream-error redaction
         run: scripts/test-download-guard-log-redaction.sh
+
+      - name: Verify upload-guard upstream-error redaction
+        run: |
+          scripts/test-upload-guard-log-redaction.sh
+          scripts/test-upload-guard-body-limits.sh
+          scripts/test-upload-filter-boundary.sh
 
       - name: Verify Caddy access-log redaction
         run: |

@@ -16,6 +16,7 @@
 | ✅ Immich is never exposed to the internet | ❌ Not zero-knowledge — the edge sees photos in RAM *during a share* (see [Threat model](#threat-model)) |
 | ✅ Ephemeral edge — only short-lived resumable ZIPs touch disk | ❌ Not a Google Photos replacement — it's a *sharing* tool |
 | ✅ Closed by default — 404 on everything when no share is active | |
+| ✅ Optional password-protected upload invitations into NAS quarantine | ❌ Uploaded files never enter Immich automatically |
 
 ## Architecture
 
@@ -23,6 +24,7 @@
 ┌─ HOME (no inbound ports) ─────────────────────────┐
 │  NAS ── Immich  ← source of truth, never exposed  │
 │      └─ WireGuard container + filtering nginx     │
+│      └─ optional upload quarantine (isolated)      │
 │  Admin machine ── immich-share CLI + web console  │
 └──────────────────┬─────────────────────────────────┘
                    │  HOME dials OUT to the VPS
@@ -31,19 +33,40 @@
 ┌─ Sovereign VPS (e.g. 🇨🇭 / 🇪🇺) ────────────────────┐
 │  Caddy :443 → Let's Encrypt (TLS on your machine) │
 │  immich-public-proxy → serves ONLY shared links   │
+│  optional upload guard → streams bounded chunks   │
 │  ⚠️ short-lived ZIP cache; automatic deletion     │
 └──────────────────┬─────────────────────────────────┘
                    ▼
       friends: link + password → gallery → download
 ```
 
-**The trust boundary is enforced at home, never on the VPS.** A compromised VPS can reach exactly one filtered route to Immich (and only while a share is open) — never the LAN, never the admin machine. See [`SETUP.md`](SETUP.md) and [`macmini/pf-wireguard.md`](macmini/pf-wireguard.md).
+The optional write path deliberately does not reverse the read path. It has a
+second NAS WireGuard peer, its own nginx allowlist and Docker network, and a
+quarantine dataset that is not mounted into Immich:
+
+```text
+browser /drop → Caddy → VPS upload-guard → dedicated WireGuard peer
+              → NAS upload-filter → upload-drop → quarantine dataset
+
+local operator/importer ───────────────────────────→ Immich (separate action)
+```
+
+**The trust boundary is enforced at home, never on the VPS.** A compromised VPS
+can reach only the read-side Immich filter while a share is open. When uploads
+are enabled, its second peer reaches only the separate upload filter and
+quarantine service—not Immich, the LAN, or the admin machine. See
+[`SETUP.md`](SETUP.md) and [`macmini/pf-wireguard.md`](macmini/pf-wireguard.md).
 
 ## Components
 
 **Third-party and separately licensed components:**
 - [Immich](https://immich.app) — your photo library (the source of truth)
 - [`immich-public-proxy`](https://github.com/ChristopherAparicio/immich-public-proxy) — our separately maintained, security-focused fork of the stateless public gallery, with resumable ZIPs and deterministic multipart downloads (AGPL-3.0)
+- [`immich-drop`](https://github.com/ChristopherAparicio/immich-drop) — our
+  separately released MIT upload application: invitation UI, resumable
+  eight-MiB chunks, policy enforcement and quarantine storage. The deployment
+  pins its multi-architecture image by immutable digest; no application source
+  or image is bundled in this repository.
 - [Caddy](https://caddyserver.com) + [`caddy-ratelimit`](https://github.com/mholt/caddy-ratelimit) — TLS + rate limiting
 - [WireGuard](https://www.wireguard.com) — the home↔VPS tunnel
 
@@ -51,6 +74,12 @@
 - `immich-share` — the CLI: `open` / `list` / `adopt` / `sync` / `close` / `sweep` / `doctor`. Creates an Immich share link **and** opens the matching Caddy path + home-side forward, then closes everything on expiry. `doctor` is read-only and, in separate-controller mode, uses a narrow forced NAS command to certify the deployed trust boundary.
 - `macmini/photo-share-monitor.py` — an authenticated, rate-limited web console (create/list/close shares, per-album telemetry) + a `/devhub` endpoint for dashboards/alerts. It binds to loopback by default; remote use requires an explicitly acknowledged encrypted private tunnel. Self-contained HTML/CSS/JS, no framework, no external CDN.
 - `nas/`, `vps/`, `macmini/` — the deployment artifacts (compose, Caddyfile, WireGuard, nginx filter, pf rules).
+- `nas/docker-compose.upload.yml` and `vps/docker-compose.upload.yml` — optional
+  write-side deployment overlays, kept separate so a gallery update cannot
+  accidentally enable uploads.
+- `nas/upload-admin-helper.py` — root-owned, forced-command JSON bridge for
+  remote invitation `open`/`list`/`close`/`sweep`; it exposes neither a shell,
+  arbitrary Docker commands, password arguments, `init`, nor `purge`.
 - `nas/controller/` — an optional NAS-hosted controller profile with a
   no-secret preflight, SSH-over-container transport, configuration, and cron
   example. The separate admin-machine profile remains the isolation default.
@@ -97,7 +126,17 @@ Most tutorials wave security away. This one has a real model — read [`SETUP.md
   nginx logs retain only method + normalized path and never the query string;
   its error log is disabled because nginx error entries can echo raw queries.
 - **The Immich API key never goes to the VPS.** It is used only by the controller to call Immich. A separate controller must use HTTPS to Immich, loopback, or explicitly confirm that clear-text HTTP is carried inside a private encrypted tunnel.
+- **The separate controller key is an invitation administrator.** If stolen, it
+  can create, list, close and sweep upload invitations within fixed limits and
+  operate the two filters. It still cannot request an arbitrary Docker command,
+  supply a password, purge data, initialize storage or obtain a general NAS
+  shell. Protect and revoke this dedicated key independently.
 - **The real weak point is the link itself** (a friend forwarding it). Hence: always a password, short TTL, and the two-channel rule (link one way, password another).
+- **Uploads accept untrusted bytes.** Extension and media-signature checks,
+  quotas and quarantine prevent ordinary abuse and library pollution; they do
+  not make a valid but malicious media file harmless. Keep Immich and its media
+  parsers current before a separate local import. The upload service never
+  invokes ffmpeg, metadata tools, archives, or Immich on the public path.
 
 ## Configuration
 
@@ -192,6 +231,49 @@ return its password for the CLI to verify.
 storing the downloaded files. It prompts for the credential-bearing URL and
 password without echo. Run it only with a temporary, non-sensitive test album
 and while monitoring both hosts; the detailed procedure is in `SETUP.md`.
+
+## Optional sovereign upload drop
+
+The upload deployment uses the existing domain under `/drop`; it requires no
+new public port or DNS record. It is closed at three independent layers:
+
+- an empty VPS `drops.d/` directory exposes no Caddy handler;
+- a stopped `wg-upload-filter` closes the dedicated NAS WireGuard address;
+- the application checks the invitation expiry, password-bound session, media
+  policy, file/count/byte quotas and upload ownership on every request.
+
+The browser receives a self-contained UI from the three local assets
+`/drop/assets/app.js`, `drop.css`, and `favicon.png`. It creates an
+upload and sends raw resumable chunks of at most eight MiB with `PATCH`; `HEAD`
+discovers the committed offset after a mobile interruption and `DELETE`
+cancels it. Chunk requests interleave naturally, so saturation returns bounded
+HTTP 429 responses instead of maintaining a resource-heavy server queue. An
+absolute per-chunk deadline prevents slow clients from holding upload slots;
+one application-owned periodic sweeper removes stale incomplete work.
+
+Files are written under server-generated invitation and upload identifiers,
+first as partial data and then atomically into `completed/`. Visitor-provided
+paths are never used. Configure a dedicated host dataset with an operating-
+system quota in addition to the application quota and free-space reserve.
+
+The VPS has no upload volume and the NAS application has no Immich API key,
+Immich network, Docker socket, Internet egress, download/listing route, or
+access to the photo library. Its Docker network is internal; only the separate
+WireGuard namespace joins a second egress network. Its OUTPUT policy uses Docker
+DNS only long enough to resolve the exact internal upload service, starts a
+loopback-only TCP relay to that resolved address, then closes DNS; only that
+service, established replies and the literal WireGuard UDP endpoint remain
+reachable. The nginx sidecar connects only to the relay in their shared network
+namespace and does not depend on shared resolver files.
+Import is intentionally a later, local operator action. See the
+optional deployment section and security checklist in [`SETUP.md`](SETUP.md).
+
+A separate controller can administer invitations through the existing
+restricted NAS SSH key. The helper consumes a bounded JSON object on stdin and
+executes the container's local CLI with fixed argv; it never exposes an HTTP
+admin route. Creating an invitation does not start the NAS filter or install
+the Caddy handler, so the public path remains closed until the explicit
+fail-closed activation sequence completes.
 
 ## License
 
