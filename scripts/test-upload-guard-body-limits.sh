@@ -3,11 +3,21 @@ set -eu
 
 image=${UPLOAD_GUARD_TEST_IMAGE:-immich-share-nginx:1.31.4-hardened}
 name="upload-guard-body-test-$$"
+payload_dir=$(mktemp -d)
+json_payload=$payload_dir/json.payload
+chunk_payload=$payload_dir/chunk.payload
+oversized_payload=$payload_dir/oversized.payload
 
 cleanup() {
     docker rm -f "$name" >/dev/null 2>&1 || true
+    rm -f "$json_payload" "$chunk_payload" "$oversized_payload"
+    rmdir "$payload_dir" >/dev/null 2>&1 || true
 }
 trap cleanup EXIT HUP INT TERM
+
+head -c 5000 /dev/zero | tr '\0' x > "$json_payload"
+head -c 5000 /dev/zero > "$chunk_payload"
+head -c 10000000 /dev/zero > "$oversized_payload"
 
 docker run -d --name "$name" -p 127.0.0.1::8081 \
     -e 'NGINX_ENVSUBST_FILTER=^UPLOAD_' \
@@ -26,17 +36,19 @@ test -n "$port"
 # Oversized JSON is rejected at 4 KiB. A small PATCH reaches the deliberately
 # absent upstream (502), proving it inherited the separate 9-MiB chunk ceiling.
 # A ten-million-byte PATCH exceeds that ceiling and is rejected locally.
-json_status=$(head -c 5000 /dev/zero | tr '\0' x | curl -s -o /dev/null -w '%{http_code}' \
+json_status=$(curl -s -o /dev/null -w '%{http_code}' \
     -H 'X-Upload-Guard: caddy-internal-v1' -H 'Content-Type: application/json' \
-    --data-binary @- \
+    -H 'Expect: 100-continue' --data-binary @"$json_payload" \
     'http://127.0.0.1:'"$port"'/drop/api/invites/UploadTokenSentinel1234567890abcdef/unlock' \
     || true)
-chunk_status=$(head -c 5000 /dev/zero | curl -s -o /dev/null -w '%{http_code}' \
-    -X PATCH -H 'X-Upload-Guard: caddy-internal-v1' --data-binary @- \
+chunk_status=$(curl -s -o /dev/null -w '%{http_code}' \
+    -X PATCH -H 'X-Upload-Guard: caddy-internal-v1' -H 'Expect: 100-continue' \
+    --data-binary @"$chunk_payload" \
     'http://127.0.0.1:'"$port"'/drop/api/uploads/01234567-89ab-cdef-0123-456789abcdef' \
     || true)
-oversized_status=$(head -c 10000000 /dev/zero | curl -s -o /dev/null -w '%{http_code}' \
-    -X PATCH -H 'X-Upload-Guard: caddy-internal-v1' --data-binary @- \
+oversized_status=$(curl -s -o /dev/null -w '%{http_code}' \
+    -X PATCH -H 'X-Upload-Guard: caddy-internal-v1' -H 'Expect: 100-continue' \
+    --data-binary @"$oversized_payload" \
     'http://127.0.0.1:'"$port"'/drop/api/uploads/01234567-89ab-cdef-0123-456789abcdef' \
     || true)
 

@@ -7,13 +7,21 @@ logs_dir=$(mktemp -d)
 chmod 0777 "$logs_dir"
 invite_token=UploadFilterToken1234567890abcdef
 query_sentinel=UploadFilterQuery987
+json_payload=$logs_dir/json.payload
+chunk_payload=$logs_dir/chunk.payload
+oversized_payload=$logs_dir/oversized.payload
 
 cleanup() {
     docker rm -f "$name" >/dev/null 2>&1 || true
-    rm -f "$logs_dir/allowed.log" "$logs_dir/denied.log"
+    rm -f "$logs_dir/allowed.log" "$logs_dir/denied.log" \
+        "$json_payload" "$chunk_payload" "$oversized_payload"
     rmdir "$logs_dir" >/dev/null 2>&1 || true
 }
 trap cleanup EXIT HUP INT TERM
+
+head -c 5000 /dev/zero | tr '\0' x > "$json_payload"
+head -c 5000 /dev/zero > "$chunk_payload"
+head -c 10000000 /dev/zero > "$oversized_payload"
 
 docker run -d --name "$name" -p 127.0.0.1::2383 \
     --add-host upload-drop:127.0.0.1 \
@@ -33,15 +41,16 @@ test -n "$port"
 
 forbidden_status=$(curl -s -o /dev/null -w '%{http_code}' \
     "http://127.0.0.1:$port/api/admin?token=$query_sentinel" || true)
-json_status=$(head -c 5000 /dev/zero | tr '\0' x | curl -s -o /dev/null -w '%{http_code}' \
-    -H 'Content-Type: application/json' --data-binary @- \
+json_status=$(curl -s -o /dev/null -w '%{http_code}' \
+    -H 'Content-Type: application/json' -H 'Expect: 100-continue' \
+    --data-binary @"$json_payload" \
     "http://127.0.0.1:$port/drop/api/invites/$invite_token/unlock" || true)
-chunk_status=$(head -c 5000 /dev/zero | curl -s -o /dev/null -w '%{http_code}' \
-    -X PATCH --data-binary @- \
+chunk_status=$(curl -s -o /dev/null -w '%{http_code}' \
+    -X PATCH -H 'Expect: 100-continue' --data-binary @"$chunk_payload" \
     "http://127.0.0.1:$port/drop/api/uploads/01234567-89ab-cdef-0123-456789abcdef" \
     || true)
-oversized_status=$(head -c 10000000 /dev/zero | curl -s -o /dev/null -w '%{http_code}' \
-    -X PATCH --data-binary @- \
+oversized_status=$(curl -s -o /dev/null -w '%{http_code}' \
+    -X PATCH -H 'Expect: 100-continue' --data-binary @"$oversized_payload" \
     "http://127.0.0.1:$port/drop/api/uploads/01234567-89ab-cdef-0123-456789abcdef" \
     || true)
 
