@@ -84,7 +84,8 @@ upstream_ip=$(docker inspect --format \
 policy=$(docker exec "$wg_container" iptables -S OUTPUT)
 append_rules=$(printf '%s\n' "$policy" | grep '^-A OUTPUT ' || true)
 [ "$(printf '%s\n' "$append_rules" | sed '/^$/d' | wc -l | tr -d ' ')" = 4 ]
-printf '%s\n' "$append_rules" | grep -Fx -- '-A OUTPUT -o lo -j ACCEPT' >/dev/null
+printf '%s\n' "$append_rules" | grep -Fx -- \
+    '-A OUTPUT -d 127.0.0.1/32 -o lo -j ACCEPT' >/dev/null
 printf '%s\n' "$append_rules" | grep -Fx -- \
     '-A OUTPUT -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT' >/dev/null \
     || printf '%s\n' "$append_rules" | grep -Fx -- \

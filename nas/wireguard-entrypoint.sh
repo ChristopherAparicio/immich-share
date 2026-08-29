@@ -40,6 +40,9 @@ lock_output() {
     # shared nginx namespace then has no interval with general LAN/Internet
     # egress. Replies to inbound WireGuard requests remain stateful.
     iptables -P OUTPUT DROP
+    # Docker may DNAT its 127.0.0.11 resolver to a random loopback port before
+    # the filter sees it. Loopback is therefore broad only during bootstrap;
+    # the tunnel is still down and the nginx sidecar has no public ingress.
     iptables -A OUTPUT -o lo -j ACCEPT
     iptables -A OUTPUT -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT
     iptables -A OUTPUT -d "$dns_server/32" -p udp --dport 53 -j ACCEPT
@@ -72,6 +75,7 @@ lock_output() {
     # steady-state exfiltration channel for either process in the namespace.
     iptables -D OUTPUT -d "$dns_server/32" -p udp --dport 53 -j ACCEPT
     iptables -D OUTPUT -d "$dns_server/32" -p tcp --dport 53 -j ACCEPT
+    iptables -R OUTPUT 1 -o lo -d 127.0.0.1/32 -j ACCEPT
 }
 
 down() {

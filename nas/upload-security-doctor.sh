@@ -33,7 +33,8 @@ certify_output_allowlist() {
     append_rules=$(printf '%s\n' "$output_policy" | grep '^-A OUTPUT ' || true)
     [ "$(printf '%s\n' "$append_rules" | sed '/^$/d' | wc -l | tr -d ' ')" = 4 ] \
         || fail "upload namespace has an unexpected output allow rule"
-    printf '%s\n' "$append_rules" | grep -Fx -- '-A OUTPUT -o lo -j ACCEPT' >/dev/null \
+    printf '%s\n' "$append_rules" | grep -Fx -- \
+        '-A OUTPUT -d 127.0.0.1/32 -o lo -j ACCEPT' >/dev/null \
         || fail "upload namespace loopback rule is missing"
     printf '%s\n' "$append_rules" | grep -Fx -- \
         '-A OUTPUT -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT' >/dev/null \
