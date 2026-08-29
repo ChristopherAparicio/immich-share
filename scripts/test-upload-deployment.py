@@ -110,7 +110,8 @@ for needle in ('WG_OUTPUT_LOCKDOWN: "true"', "WG_INTERNAL_UPSTREAM_HOST: upload-
     require(upload_wireguard, needle, "upload WireGuard lockdown")
 for needle in ("iptables -P OUTPUT DROP", 'WG_INTERNAL_UPSTREAM_HOST:?',
                'WG_INTERNAL_UPSTREAM_PORT:?', 'WG_LOCAL_PROXY_PORT:?',
-               'socat "TCP-LISTEN:', "iptables -D OUTPUT"):
+               'socat "TCP-LISTEN:', "iptables -D OUTPUT",
+               "iptables -R OUTPUT 1 -o lo -d 127.0.0.1/32 -j ACCEPT"):
     require(wireguard_entrypoint, needle, "WireGuard output policy")
 require(nas_upload, "DROP_UPSTREAM: 127.0.0.1:18080", "upload loopback relay")
 require(nas_base, "IMMICH_UPSTREAM: 127.0.0.1:18080", "share loopback relay")
@@ -131,7 +132,8 @@ for needle in ("source_mode", 'source_owner', '[ "$source_mode" = 700 ]',
                "egress_members", "admin_helper", "upload administration helper",
                "-P OUTPUT DROP", "unexpected LAN or Internet egress",
                "certify_output_allowlist", "unexpected output allow rule",
-               "-A OUTPUT -o lo -j ACCEPT", "expected_upstream_ip"):
+               "-A OUTPUT -d 127.0.0.1/32 -o lo -j ACCEPT",
+               "expected_upstream_ip"):
     require(nas_doctor, needle, "NAS upload doctor")
 
 print("Upload deployment boundary checks passed.")
