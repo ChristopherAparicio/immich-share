@@ -256,6 +256,13 @@ first as partial data and then atomically into `completed/`. Visitor-provided
 paths are never used. Configure a dedicated host dataset with an operating-
 system quota in addition to the application quota and free-space reserve.
 
+Completed media is hashed by the server and deduplicated only inside the same
+invitation. The first copy remains canonical; a later identical upload is
+removed, its quota reservation is released, and the UI says it was already
+received. The complete file must still cross the network before this decision,
+so immutable per-invitation attempt, request, and ingress-byte work budgets
+bound repeated work. No content hash or cross-invitation match is exposed.
+
 The VPS has no upload volume and the NAS application has no Immich API key,
 Immich network, Docker socket, Internet egress, download/listing route, or
 access to the photo library. Its Docker network is internal; only the separate
