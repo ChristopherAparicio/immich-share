@@ -375,8 +375,8 @@ In the ignored `nas/.env`, set both directory paths, the session-secret file
 path, public HTTPS origin without `/drop`, private upload WireGuard address,
 policy ceilings, and `UPLOAD_DROP_IMAGE`. The image value is deliberately
 required and must include an immutable `@sha256:` digest. The reviewed
-release is `ghcr.io/christopheraparicio/immich-drop:v0.1.1` at digest
-`sha256:85f667d0f6fc18dec813dcb6dc53ac81d9db0de8a55b82d8303883f0f8bae376`;
+release is `ghcr.io/christopheraparicio/immich-drop:v0.2.0` at digest
+`sha256:aacb9da84f534c01e8ad40e15ec754c2dded7586cf27a12f68379a70320aa916`;
 verify the release provenance before copying a newer digest.
 
 Validate without opening a public route:
@@ -521,6 +521,15 @@ one of the three upload slots indefinitely. The application also owns the
 single internal incomplete-upload sweeper, every 300 seconds by default. Do not
 install a second cron/timer sweeper; operator `sweep` remains an explicit
 maintenance/reconciliation command, not another scheduled owner.
+
+The application computes SHA-256 only after a complete file has been received
+and its media signature has passed. Within that invitation only, a later file
+with the same size, category and digest is discarded, its quota is released,
+and the browser reports that it was already received. This saves quarantine
+space but not ingress bandwidth. `UPLOAD_DROP_WORK_MULTIPLIER` defaults to `3`
+and is captured into each new invitation to bound cumulative upload-creation
+attempts, chunk requests and declared chunk bytes; values above `10` are
+refused. No client hash oracle or cross-invitation comparison exists.
 
 ### Download limits and resumable ZIPs
 
@@ -705,6 +714,9 @@ short-lived, non-sensitive invitation:
 - [ ] Per-file, file-count, invitation-byte, global-byte, disk-reserve and
       concurrency limits fail closed without leaving an unaccounted partial.
 - [ ] Interrupting a chunk and resuming from the `HEAD` offset works on iOS.
+- [ ] Uploading the same media twice in one invitation reports it as already
+      received, leaves one manifest/file entry, and releases the second quota
+      reservation; the same media in another invitation remains independent.
 - [ ] Expiry blocks new and resumed chunks even before a sweep runs.
 - [ ] No route lists or downloads received files; `/healthz`, admin paths and
       unexpected methods return 404 externally.

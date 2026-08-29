@@ -25,9 +25,9 @@ longer part of the current tree.
 The optional deployment overlays reference the separately maintained MIT
 application [`ChristopherAparicio/immich-drop`](https://github.com/ChristopherAparicio/immich-drop)
 through `UPLOAD_DROP_IMAGE`. Its reviewed source is commit
-`fd3aba83c0fbd4df2300a1e2dd024531e75b3deb`, release `v0.1.1`; the immutable
+`64228ba0ddc30ca16fadcd415fef1bde50f8eb45`, release `v0.2.0`; the immutable
 multi-architecture image digest is
-`sha256:85f667d0f6fc18dec813dcb6dc53ac81d9db0de8a55b82d8303883f0f8bae376`.
+`sha256:aacb9da84f534c01e8ad40e15ec754c2dded7586cf27a12f68379a70320aa916`.
 Application source is not vendored or relicensed by this orchestration
 repository. Its own `LICENSE` and `THIRD_PARTY_NOTICES.md` retain the MIT notice
 from [`Nasogaa/immich-drop`](https://github.com/Nasogaa/immich-drop), identify
