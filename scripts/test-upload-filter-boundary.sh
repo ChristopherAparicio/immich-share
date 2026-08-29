@@ -41,7 +41,8 @@ chunk_status=$(head -c 5000 /dev/zero | curl -s -o /dev/null -w '%{http_code}' \
     "http://127.0.0.1:$port/drop/api/uploads/01234567-89ab-cdef-0123-456789abcdef")
 oversized_status=$(head -c 10000000 /dev/zero | curl -s -o /dev/null -w '%{http_code}' \
     -X PATCH --data-binary @- \
-    "http://127.0.0.1:$port/drop/api/uploads/01234567-89ab-cdef-0123-456789abcdef")
+    "http://127.0.0.1:$port/drop/api/uploads/01234567-89ab-cdef-0123-456789abcdef" \
+    || true)
 
 [ "$forbidden_status" = 404 ] || { echo "expected refusal 404, got $forbidden_status" >&2; exit 1; }
 [ "$json_status" = 413 ] || { echo "expected JSON 413, got $json_status" >&2; exit 1; }

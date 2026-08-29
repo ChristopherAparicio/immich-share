@@ -35,7 +35,8 @@ chunk_status=$(head -c 5000 /dev/zero | curl -s -o /dev/null -w '%{http_code}' \
     'http://127.0.0.1:'"$port"'/drop/api/uploads/01234567-89ab-cdef-0123-456789abcdef')
 oversized_status=$(head -c 10000000 /dev/zero | curl -s -o /dev/null -w '%{http_code}' \
     -X PATCH -H 'X-Upload-Guard: caddy-internal-v1' --data-binary @- \
-    'http://127.0.0.1:'"$port"'/drop/api/uploads/01234567-89ab-cdef-0123-456789abcdef')
+    'http://127.0.0.1:'"$port"'/drop/api/uploads/01234567-89ab-cdef-0123-456789abcdef' \
+    || true)
 
 [ "$json_status" = 413 ] || { echo "expected JSON 413, got $json_status" >&2; exit 1; }
 [ "$chunk_status" = 502 ] || { echo "expected chunk upstream 502, got $chunk_status" >&2; exit 1; }
