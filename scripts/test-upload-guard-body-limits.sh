@@ -33,6 +33,25 @@ docker run -d --name "$name" -p 127.0.0.1::8081 \
 port=$(docker port "$name" 8081/tcp | sed -n 's/.*://p' | tail -1)
 test -n "$port"
 
+ready=false
+attempt=0
+while [ "$attempt" -lt 50 ]; do
+    ready_status=$(curl -s -o /dev/null -w '%{http_code}' \
+        -H 'X-Upload-Guard: caddy-internal-v1' \
+        "http://127.0.0.1:$port/__readiness" || true)
+    if [ "$ready_status" = 404 ]; then
+        ready=true
+        break
+    fi
+    attempt=$((attempt + 1))
+    sleep 0.1
+done
+[ "$ready" = true ] || {
+    docker logs "$name" >&2 || true
+    echo "upload guard did not become ready" >&2
+    exit 1
+}
+
 # Oversized JSON is rejected at 4 KiB. A small PATCH reaches the deliberately
 # absent upstream (502), proving it inherited the separate 9-MiB chunk ceiling.
 # A ten-million-byte PATCH exceeds that ceiling and is rejected locally.

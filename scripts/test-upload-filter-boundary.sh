@@ -39,6 +39,24 @@ docker run -d --name "$name" -p 127.0.0.1::2383 \
 port=$(docker port "$name" 2383/tcp | sed -n 's/.*://p' | tail -1)
 test -n "$port"
 
+ready=false
+attempt=0
+while [ "$attempt" -lt 50 ]; do
+    ready_status=$(curl -s -o /dev/null -w '%{http_code}' \
+        "http://127.0.0.1:$port/__readiness" || true)
+    if [ "$ready_status" = 404 ]; then
+        ready=true
+        break
+    fi
+    attempt=$((attempt + 1))
+    sleep 0.1
+done
+[ "$ready" = true ] || {
+    docker logs "$name" >&2 || true
+    echo "NAS upload filter did not become ready" >&2
+    exit 1
+}
+
 forbidden_status=$(curl -s -o /dev/null -w '%{http_code}' \
     "http://127.0.0.1:$port/api/admin?token=$query_sentinel" || true)
 json_status=$(curl -s -o /dev/null -w '%{http_code}' \
