@@ -1,0 +1,186 @@
+# Optional sovereign upload-drop stack. Keep this file separate from the
+# read-only Immich sharing Compose project so a normal gallery upgrade cannot
+# start, stop, or reconfigure the write-side trust boundary accidentally.
+services:
+  upload-wireguard:
+    build:
+      context: .
+      dockerfile: Dockerfile.wireguard
+    image: immich-share-wireguard:1.1.20260829-r0
+    container_name: wg-upload-tunnel
+    cap_add:
+      - NET_ADMIN
+      - DAC_READ_SEARCH
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    sysctls:
+      - net.ipv4.ip_forward=0
+    environment:
+      WG_OUTPUT_LOCKDOWN: "true"
+      WG_INTERNAL_UPSTREAM_HOST: upload-drop
+      WG_INTERNAL_UPSTREAM_PORT: "8080"
+      WG_LOCAL_PROXY_PORT: "18080"
+    volumes:
+      - ./wg0-upload-nas.conf:/config/wg0.conf:ro
+    read_only: true
+    tmpfs:
+      - /run:size=2m,mode=0755,nosuid,nodev
+      - /tmp:size=2m,mode=1777,noexec,nosuid,nodev
+    networks:
+      - immich_drop_net
+      - upload_egress_net
+    depends_on:
+      - upload-drop
+    restart: unless-stopped
+    mem_limit: ${UPLOAD_WG_MEMORY_LIMIT:-128m}
+    cpus: ${UPLOAD_WG_CPU_LIMIT:-0.50}
+    pids_limit: ${UPLOAD_WG_PIDS_LIMIT:-128}
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  upload-drop:
+    image: ${UPLOAD_DROP_IMAGE:?set UPLOAD_DROP_IMAGE to an immutable image digest}
+    container_name: immich-upload-drop
+    init: true
+    restart: unless-stopped
+    user: "65532:65532"
+    environment:
+      INCOMING_ROOT: /incoming
+      STATE_DB: /data/state.db
+      PUBLIC_BASE_URL: ${UPLOAD_PUBLIC_BASE_URL:?set UPLOAD_PUBLIC_BASE_URL in nas/.env}
+      SESSION_SECRET_FILE: /run/secrets/session-secret
+      GLOBAL_BUDGET_BYTES: ${UPLOAD_DROP_GLOBAL_BUDGET_BYTES:-21474836480}
+      DISK_RESERVE_BYTES: ${UPLOAD_DROP_DISK_RESERVE_BYTES:-5368709120}
+      DEFAULT_MAX_FILE_BYTES: ${UPLOAD_DROP_DEFAULT_MAX_FILE_BYTES:-536870912}
+      DEFAULT_MAX_FILES: ${UPLOAD_DROP_DEFAULT_MAX_FILES:-500}
+      DEFAULT_QUOTA_BYTES: ${UPLOAD_DROP_DEFAULT_QUOTA_BYTES:-1073741824}
+      UPLOAD_CHUNK_BYTES: ${UPLOAD_DROP_CHUNK_BYTES:-8388608}
+      UPLOAD_CHUNK_TIMEOUT_SECONDS: ${UPLOAD_DROP_CHUNK_TIMEOUT_SECONDS:-180}
+      INCOMPLETE_TTL_SECONDS: ${UPLOAD_DROP_INCOMPLETE_TTL_SECONDS:-86400}
+      SWEEP_INTERVAL_SECONDS: ${UPLOAD_DROP_SWEEP_INTERVAL_SECONDS:-300}
+      SESSION_MAX_AGE_SECONDS: ${UPLOAD_DROP_SESSION_MAX_AGE_SECONDS:-43200}
+      MAX_CLIENT_CONCURRENCY: ${UPLOAD_DROP_MAX_CLIENT_CONCURRENCY:-2}
+      MAX_ACTIVE_UPLOADS: ${UPLOAD_DROP_MAX_ACTIVE_UPLOADS:-3}
+      MAX_ACTIVE_UNLOCKS: ${UPLOAD_DROP_MAX_ACTIVE_UNLOCKS:-2}
+      MAX_INVITE_TTL_SECONDS: ${UPLOAD_DROP_MAX_INVITE_TTL_SECONDS:-604800}
+      LOG_LEVEL: ${UPLOAD_DROP_LOG_LEVEL:-INFO}
+      COOKIE_SECURE: "true"
+    volumes:
+      - type: bind
+        source: ${UPLOAD_DROP_STORAGE_PATH:?set UPLOAD_DROP_STORAGE_PATH in nas/.env}
+        target: /incoming
+      - type: bind
+        source: ${UPLOAD_DROP_STATE_PATH:?set UPLOAD_DROP_STATE_PATH in nas/.env}
+        target: /data
+      - type: bind
+        source: ${UPLOAD_DROP_SESSION_SECRET_FILE:?set UPLOAD_DROP_SESSION_SECRET_FILE in nas/.env}
+        target: /run/secrets/session-secret
+        read_only: true
+    read_only: true
+    tmpfs:
+      - /tmp:size=32m,mode=1777,uid=65532,gid=65532,noexec,nosuid,nodev
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    mem_limit: ${UPLOAD_DROP_MEMORY_LIMIT:-384m}
+    cpus: ${UPLOAD_DROP_CPU_LIMIT:-1.00}
+    pids_limit: ${UPLOAD_DROP_PIDS_LIMIT:-192}
+    ulimits:
+      nofile:
+        soft: 2048
+        hard: 2048
+    stop_grace_period: 30s
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+    networks:
+      - immich_drop_net
+
+  upload-filter:
+    build:
+      context: .
+      dockerfile: Dockerfile.nginx
+    image: immich-share-nginx:1.31.4-hardened
+    container_name: wg-upload-filter
+    init: true
+    user: "101:101"
+    network_mode: service:upload-wireguard
+    environment:
+      NGINX_ENVSUBST_FILTER: "^(UPLOAD_|DROP_UPSTREAM$)"
+      UPLOAD_NAS_WG_ADDRESS: ${UPLOAD_NAS_WG_ADDRESS:?set UPLOAD_NAS_WG_ADDRESS in .env}
+      DROP_UPSTREAM: 127.0.0.1:18080
+      UPLOAD_FILTER_MAX_BODY: ${UPLOAD_FILTER_MAX_BODY:-9m}
+      UPLOAD_FILTER_REQUEST_RATE: ${UPLOAD_FILTER_REQUEST_RATE:-30r/s}
+      UPLOAD_FILTER_PER_IP: ${UPLOAD_FILTER_PER_IP:-2}
+      UPLOAD_FILTER_GLOBAL: ${UPLOAD_FILTER_GLOBAL:-6}
+    volumes:
+      - ./upload-filter.conf:/etc/nginx/templates/default.conf.template:ro
+      - ./upload-logs:/var/log/nginx
+    read_only: true
+    tmpfs:
+      - /etc/nginx/conf.d:size=1m,mode=0755,uid=101,gid=101,noexec,nosuid,nodev
+      - /var/cache/nginx:size=16m,mode=0755,uid=101,gid=101,noexec,nosuid,nodev
+      - /var/run:size=1m,mode=0755,uid=101,gid=101,noexec,nosuid,nodev
+      - /tmp:size=1m,mode=1777,uid=101,gid=101,noexec,nosuid,nodev
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    depends_on:
+      - upload-wireguard
+      - upload-drop
+    restart: unless-stopped
+    mem_limit: ${UPLOAD_FILTER_MEMORY_LIMIT:-96m}
+    cpus: ${UPLOAD_FILTER_CPU_LIMIT:-0.50}
+    pids_limit: ${UPLOAD_FILTER_PIDS_LIMIT:-64}
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  upload-logrotate:
+    build:
+      context: .
+      dockerfile: Dockerfile.logrotate
+    image: immich-share-logrotate:1.0.20260827-r0
+    container_name: immich-upload-logrotate
+    init: true
+    user: "101:101"
+    network_mode: none
+    volumes:
+      - ./upload-logs:/var/log/nginx
+      - ./logrotate.conf:/etc/logrotate.conf:ro
+    read_only: true
+    tmpfs:
+      - /tmp:size=1m,mode=0700,uid=101,gid=101,noexec,nosuid,nodev
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    restart: unless-stopped
+    mem_limit: 32m
+    cpus: 0.10
+    pids_limit: 16
+    logging:
+      driver: json-file
+      options:
+        max-size: "1m"
+        max-file: "2"
+
+networks:
+  immich_drop_net:
+    external: true
+    name: ${IMMICH_DROP_DOCKER_NETWORK:-immich_drop}
+  # Only the WireGuard namespace receives ordinary host egress so it can
+  # establish the UDP tunnel. upload-drop remains on the internal data network.
+  upload_egress_net:
+    driver: bridge

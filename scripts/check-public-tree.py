@@ -12,7 +12,10 @@ ROOT = Path(__file__).resolve().parents[1]
 FORBIDDEN_PATHS = [
     re.compile(
         r"(^|/)(?:config\.ini|api-key|private\.key|credentials\.json|"
-        r"\.netrc|\.npmrc|id_rsa|id_ed25519|managed-shares\.json)$"
+        r"\.netrc|\.npmrc|id_rsa|id_ed25519|managed-shares\.json|"
+        r"managed-drops\.json|upload-drop\.sqlite3|state\.db(?:-(?:wal|shm))?|"
+        r"\.immich-drop-root|.*\.part|session-secret|"
+        r"upload-session-secret)$"
     ),
     re.compile(r"(^|/).*\.key$"),
     re.compile(r"(^|/)\.env(?:\.(?!example$).+)?$"),

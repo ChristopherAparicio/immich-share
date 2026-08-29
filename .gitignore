@@ -18,6 +18,16 @@ credentials.json
 .npmrc
 secrets/
 managed-shares.json
+managed-drops.json
+upload-drop.sqlite3
+state.db
+state.db-wal
+state.db-shm
+.immich-drop-root
+*.part
+session-secret
+upload-session-secret
+upload-logs/
 __pycache__/
 logs/
 vps/zip-staging/

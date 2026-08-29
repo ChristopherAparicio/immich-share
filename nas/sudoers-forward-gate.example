@@ -3,6 +3,14 @@
 Cmnd_Alias IMMICH_SHARE_FORWARD = /usr/bin/docker start wg-nginx-filter, \
     /usr/bin/docker stop --time 10 wg-nginx-filter, \
     /usr/bin/docker inspect --format {{.State.Running}} wg-nginx-filter, \
-    /usr/local/sbin/immich-share-security-doctor
+    /usr/local/sbin/immich-share-security-doctor, \
+    /usr/bin/docker start wg-upload-filter, \
+    /usr/bin/docker stop --time 10 wg-upload-filter, \
+    /usr/bin/docker inspect --format {{.State.Running}} wg-upload-filter, \
+    /usr/local/sbin/immich-share-upload-security-doctor, \
+    /usr/local/sbin/immich-share-upload-admin open, \
+    /usr/local/sbin/immich-share-upload-admin list, \
+    /usr/local/sbin/immich-share-upload-admin close, \
+    /usr/local/sbin/immich-share-upload-admin sweep
 
 immich-share-gate ALL=(root) NOPASSWD: IMMICH_SHARE_FORWARD
