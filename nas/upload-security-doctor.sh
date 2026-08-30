@@ -77,7 +77,7 @@ case "$wg_hardening" in
 esac
 
 wg_config_source=$(docker inspect --format \
-    '{{range .Mounts}}{{if eq .Destination "/config/wg0.conf"}}{{if not .RW}}{{.Source}}{{end}}{{end}}' \
+    '{{range .Mounts}}{{if eq .Destination "/config/wg0.conf"}}{{if not .RW}}{{.Source}}{{end}}{{end}}{{end}}' \
     "$wg_container" 2>/dev/null || true)
 [ -n "$wg_config_source" ] && [ -f "$wg_config_source" ] && [ ! -L "$wg_config_source" ] \
     || fail "upload WireGuard configuration mount is missing or unsafe"
@@ -187,7 +187,7 @@ for destination in /data /incoming; do
         || fail "upload storage mount owner or permissions are unsafe"
 done
 secret_source=$(docker inspect --format \
-    '{{range .Mounts}}{{if eq .Destination "/run/secrets/session-secret"}}{{if not .RW}}{{.Source}}{{end}}{{end}}' \
+    '{{range .Mounts}}{{if eq .Destination "/run/secrets/session-secret"}}{{if not .RW}}{{.Source}}{{end}}{{end}}{{end}}' \
     "$app_container" 2>/dev/null || true)
 [ -n "$secret_source" ] && [ -f "$secret_source" ] && [ ! -L "$secret_source" ] \
     || fail "upload session secret mount is missing or unsafe"
@@ -218,17 +218,24 @@ printf '%s\n' "$directives" | grep -F 'log_format drop_route' >/dev/null \
     || fail "normalized upload log format is missing"
 printf '%s\n' "$directives" | grep -F 'access_log /var/log/nginx/allowed.log drop_route' >/dev/null \
     || fail "normalized upload access log is not active"
+printf '%s\n' "$directives" | grep -F 'access_log /var/log/nginx/denied.log drop_route' >/dev/null \
+    || fail "normalized upload refusal log is not active"
 # shellcheck disable=SC2016 # Match literal nginx variable names.
-if printf '%s\n' "$directives" | grep -E 'log_format.*\$(request_uri|request)([^A-Za-z_]|$)' >/dev/null; then
+drop_log_format=$(printf '%s\n' "$directives" \
+    | sed -n '/^[[:space:]]*log_format[[:space:]]\+drop_route[[:space:]]/,/;/p')
+if printf '%s\n' "$drop_log_format" \
+    | grep -E '\$(request_uri|request)([^A-Za-z_]|$)' >/dev/null; then
     fail "upload route logs contain the raw request target"
 fi
 
 listen_address=$(printf '%s\n' "$directives" \
     | sed -n 's/^[[:space:]]*listen[[:space:]]\+\([^:;]*\):2383.*/\1/p' | head -1)
 [ -n "$listen_address" ] || fail "upload filter listener cannot be identified"
+printf '%s\n' "$directives" | grep -F 'listen 127.0.0.1:2383' >/dev/null \
+    || fail "private upload filter probe listener is missing"
 sentinel="UPLOADDOCTOR$$"
-response=$(printf 'GET /api/admin?token=%s HTTP/1.0\r\nHost: doctor.invalid\r\n\r\n' "$sentinel" \
-    | docker exec -i "$wg_container" nc -w 5 "$listen_address" 2383 2>/dev/null \
+response=$({ printf 'GET /api/admin?token=%s HTTP/1.0\r\nHost: doctor.invalid\r\n\r\n' "$sentinel"; sleep 1; } \
+    | docker exec -i "$filter_container" nc -w 5 127.0.0.1 2383 2>/dev/null \
     | sed -n '1p' || true)
 case "$response" in
     *" 404 "*) ;;
@@ -238,9 +245,9 @@ esac
 # Exercise an allowed token-bearing route with an unknown canary so runtime app
 # logging is tested too. Its response may legitimately be 401 or 404.
 app_token="UPLOADDOCTOR0123456789ABCDEF0123456789$$"
-printf 'GET /drop/i/%s?probe=%s HTTP/1.0\r\nHost: doctor.invalid\r\n\r\n' \
-    "$app_token" "$app_token" \
-    | docker exec -i "$wg_container" nc -w 5 "$listen_address" 2383 >/dev/null 2>&1 \
+{ printf 'GET /drop/i/%s?probe=%s HTTP/1.0\r\nHost: doctor.invalid\r\n\r\n' \
+    "$app_token" "$app_token"; sleep 1; } \
+    | docker exec -i "$filter_container" nc -w 5 127.0.0.1 2383 >/dev/null 2>&1 \
     || true
 sleep 1
 
@@ -257,7 +264,7 @@ if grep -R -F -q "$sentinel" "$logs_dir" 2>/dev/null \
     fail "upload query sentinel leaked into runtime logs"
 fi
 
-health=$(printf 'GET /healthz HTTP/1.0\r\nHost: upload-drop\r\n\r\n' \
+health=$({ printf 'GET /healthz HTTP/1.0\r\nHost: upload-drop\r\n\r\n'; sleep 1; } \
     | docker exec -i "$filter_container" nc -w 5 127.0.0.1 18080 2>/dev/null \
     | sed -n '1p' || true)
 case "$health" in
