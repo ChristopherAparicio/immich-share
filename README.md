@@ -274,6 +274,9 @@ reachable. The nginx sidecar connects only to the relay in their shared network
 namespace and does not depend on shared resolver files.
 Import is intentionally a later, local operator action. See the
 optional deployment section and security checklist in [`SETUP.md`](SETUP.md).
+The complete close, review, Immich CLI import and purge procedure—including why
+the separate controller cannot read the NAS quarantine—is documented in
+[`UPLOAD_IMPORT.md`](UPLOAD_IMPORT.md).
 
 A separate controller can administer invitations through the existing
 restricted NAS SSH key. The helper consumes a bounded JSON object on stdin and
