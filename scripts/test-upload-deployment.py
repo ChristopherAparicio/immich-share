@@ -131,10 +131,19 @@ if "ports:" in vps_upload or "UPLOAD_DROP_IMAGE" in vps_upload:
 for needle in ("source_mode", 'source_owner', '[ "$source_mode" = 700 ]',
                '[ "$secret_mode" = 400 ]', "wg_config_source", "{{.Internal}}",
                "egress_members", "admin_helper", "upload administration helper",
+               "/var/log/nginx/denied.log drop_route", "drop_log_format",
+               "listen 127.0.0.1:2383", 'docker exec -i "$filter_container"',
                "-P OUTPUT DROP", "unexpected LAN or Internet egress",
                "certify_output_allowlist", "unexpected output allow rule",
                "-A OUTPUT -d 127.0.0.1/32 -o lo -j ACCEPT",
                "expected_upstream_ip"):
     require(nas_doctor, needle, "NAS upload doctor")
+
+for readonly_mount in ("/config/wg0.conf", "/run/secrets/session-secret"):
+    template = (
+        '{{range .Mounts}}{{if eq .Destination "' + readonly_mount
+        + '"}}{{if not .RW}}{{.Source}}{{end}}{{end}}{{end}}'
+    )
+    require(nas_doctor, template, "NAS upload doctor read-only mount inspection")
 
 print("Upload deployment boundary checks passed.")
