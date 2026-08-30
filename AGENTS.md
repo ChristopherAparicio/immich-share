@@ -25,6 +25,15 @@ Invitation mutations must not implicitly change Caddy or filter state.
 Keep the application's absolute chunk timeout and its single internal periodic
 sweeper enabled. Do not install a second cron or timer for upload sweeps.
 
+Review and import are NAS-local trusted operations described in
+`UPLOAD_IMPORT.md`. Keep an importer separate from `upload-drop`: read-only
+quarantine mount, scoped Immich key file, no public route, no Docker socket and
+no automatic purge. The separate controller has no quarantine read permission
+or import permission. Any future remote trigger must be a distinct exact
+forced-command helper taking only a full invitation UUID; never broaden the
+existing upload administration bridge into filesystem, shell, Docker or
+arbitrary CLI access.
+
 ## Installation workflow
 
 1. Run read-only discovery first and reuse values already present in the local

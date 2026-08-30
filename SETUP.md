@@ -531,6 +531,12 @@ and is captured into each new invitation to bound cumulative upload-creation
 attempts, chunk requests and declared chunk bytes; values above `10` are
 refused. No client hash oracle or cross-invitation comparison exists.
 
+Closing the public path does not remove completed quarantine files and the
+separate controller has no filesystem or import permission. Perform review and
+Immich upload locally on the NAS using the isolated workflow in
+[`UPLOAD_IMPORT.md`](UPLOAD_IMPORT.md); keep the upload tunnel stopped during
+that work unless another active invitation requires it.
+
 ### Download limits and resumable ZIPs
 
 Caddy sends only individual originals, the legacy `/share/<key>/download`
