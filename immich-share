@@ -1291,9 +1291,12 @@ def cmd_open(args, immich: Immich, edge: Edge):
             else:
                 print("  The QR code contains only the link. Send the password separately.")
     print()
-    print(
-        "  📤 Two-channel rule: send the link by email/WhatsApp and the password by SMS/Signal/voice."
-    )
+    if qr_with_password:
+        print("  📤 One-scan mode: send the QR as a credential; anyone holding it can unlock the share.")
+    else:
+        print(
+            "  📤 Two-channel rule: send the link by email/WhatsApp and the password by SMS/Signal/voice."
+        )
 
 
 def cmd_list(args, immich: Immich, edge: Edge):
