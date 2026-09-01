@@ -662,12 +662,16 @@ option is an acknowledgement, not encryption by itself.
 ```bash
 ./immich-share list
 ./immich-share open "Test album" --ttl 24h --for "Alex"
+./immich-share open "Test album" --ttl 24h --for "Alex" --qr
 ./immich-share doctor
 ```
 
 `open` generates a password unless `--password` requests a hidden confirmation
 prompt or `--password-file` points to a private mode-0600 file. Never place a
-password value directly in a command line.
+password value directly in a command line. The optional `--qr` output requires
+the `qrencode` executable in `PATH`. It generates the QR locally from the link
+only; send the separately printed password through another channel. A missing
+or failing `qrencode` never rolls back an otherwise valid share.
 
 ### Migration from an earlier release
 

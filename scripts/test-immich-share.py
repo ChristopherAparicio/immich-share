@@ -1,15 +1,18 @@
 #!/usr/bin/env python3
 import configparser
 import hashlib
+import io
 import importlib.machinery
 import importlib.util
 import json
 import re
 import tempfile
 import unittest
+from contextlib import redirect_stderr, redirect_stdout
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from types import SimpleNamespace
+from unittest import mock
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -47,6 +50,8 @@ class FakeImmich:
 
 
 class OpenImmich(FakeImmich):
+    public_base = "https://photos.example.com"
+
     def find_album(self, name):
         return {"id": "album-id", "albumName": name, "assetCount": 1}
 
@@ -211,6 +216,56 @@ class OwnershipTests(unittest.TestCase):
         self.assertEqual(self.state.keys(), set())
         self.assertIn("new_share_key_1234.caddy", edge.removed)
         self.assertEqual(edge.forward, [True, False])
+
+    def test_open_qr_contains_public_link_only(self):
+        immich = OpenImmich([])
+        args = SimpleNamespace(
+            album="Test album",
+            ttl="24h",
+            max_ttl=timedelta(days=30),
+            prompt_password=False,
+            password_file=None,
+            for_="recipient",
+            allow_download=True,
+            managed_state=self.state,
+            qr=True,
+        )
+        password = "fixed.share.password.123"
+        with mock.patch.object(module, "gen_password", return_value=password):
+            with mock.patch.object(module, "print_terminal_qr", return_value=True) as qr:
+                with redirect_stdout(io.StringIO()):
+                    module.cmd_open(args, immich, FakeEdge())
+
+        qr.assert_called_once_with(
+            "https://photos.example.com/share/new_share_key_1234"
+        )
+        self.assertNotIn(password, qr.call_args.args[0])
+
+    def test_terminal_qr_passes_link_on_stdin_not_process_arguments(self):
+        url = "https://photos.example.com/share/secret_share_key"
+        completed = SimpleNamespace(returncode=0, stdout="terminal-qr\n", stderr="")
+        with mock.patch.object(module.shutil, "which", return_value="/usr/bin/qrencode"):
+            with mock.patch.object(module.subprocess, "run", return_value=completed) as run:
+                output = io.StringIO()
+                with redirect_stdout(output):
+                    self.assertTrue(module.print_terminal_qr(url))
+
+        command = run.call_args.args[0]
+        self.assertNotIn(url, command)
+        self.assertEqual(run.call_args.kwargs["input"], url)
+        self.assertEqual(output.getvalue(), "terminal-qr\n")
+
+    def test_missing_qrencode_does_not_invalidate_share(self):
+        errors = io.StringIO()
+        with mock.patch.object(module.shutil, "which", return_value=None):
+            with redirect_stderr(errors):
+                self.assertFalse(
+                    module.print_terminal_qr(
+                        "https://photos.example.com/share/secret_share_key"
+                    )
+                )
+
+        self.assertIn("QR code unavailable", errors.getvalue())
 
     def test_password_file_must_be_private(self):
         password = Path(self.temp.name) / "share-password"
