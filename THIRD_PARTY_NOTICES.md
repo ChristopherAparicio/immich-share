@@ -35,6 +35,7 @@ the clean-history derivative baseline, and publish build provenance.
 
 ## Other components
 
-Immich, Caddy, the Caddy rate-limit module, nginx, WireGuard, socat and the
-container base images remain subject to their respective upstream licences.
-This repository configures or references them; it does not relicense them.
+Immich, Caddy, the Caddy rate-limit module, nginx, WireGuard, socat, the
+optional libqrencode command-line utility and the container base images remain
+subject to their respective upstream licences. This repository configures or
+references them; it does not relicense them.

@@ -25,6 +25,7 @@ import os
 import re
 import secrets
 import shlex
+import shutil
 import stat
 import string
 import subprocess
@@ -764,6 +765,39 @@ def resolve_open_password(args) -> str:
     return gen_password()
 
 
+def print_terminal_qr(url: str) -> bool:
+    """Render a link locally without exposing it in the process arguments."""
+    qrencode = shutil.which("qrencode")
+    if qrencode is None:
+        print(
+            "  ! QR code unavailable: install qrencode or copy the link above.",
+            file=sys.stderr,
+        )
+        return False
+    try:
+        result = subprocess.run(
+            [qrencode, "-t", "ANSIUTF8"],
+            input=url,
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+    except (OSError, subprocess.SubprocessError):
+        print(
+            "  ! QR code generation failed; the share link remains valid.",
+            file=sys.stderr,
+        )
+        return False
+    if result.returncode != 0 or not result.stdout:
+        print(
+            "  ! QR code generation failed; the share link remains valid.",
+            file=sys.stderr,
+        )
+        return False
+    print(result.stdout, end="" if result.stdout.endswith("\n") else "\n")
+    return True
+
+
 def check_key(key: str) -> str:
     if not KEY_RE.fullmatch(key):
         die(f"unexpected share key '{key[:40]}' — rejected to prevent Caddy injection")
@@ -1228,11 +1262,17 @@ def cmd_open(args, immich: Immich, edge: Edge):
         raise
 
     print()
-    print(f"  Link     : {immich.public_base}/share/{key}")
+    public_link = f"{immich.public_base}/share/{key}"
+    print(f"  Link     : {public_link}")
     print(f"  Password : {password}")
     print(f"  Expires  : {expires_at}  (TTL {args.ttl})")
     if description:
         print(f"  For      : {description}")
+    if getattr(args, "qr", False):
+        print()
+        print("  Scan this QR code to open the share link:")
+        if print_terminal_qr(public_link):
+            print("  The QR code contains only the link. Send the password separately.")
     print()
     print(
         "  📤 Two-channel rule: send the link by email/WhatsApp and the password by SMS/Signal/voice."
@@ -1395,6 +1435,11 @@ def main():
     )
     po.add_argument(
         "--for", dest="for_", default="", help="recipient label (one link per person)"
+    )
+    po.add_argument(
+        "--qr",
+        action="store_true",
+        help="print a terminal QR code for the link (requires qrencode)",
     )
     passwords = po.add_mutually_exclusive_group()
     passwords.add_argument(
