@@ -22,15 +22,31 @@ docker run -d --name "$name" \
     -v "$PWD/vps/upload-guard.conf.template:/etc/nginx/templates/default.conf.template:ro" \
     "$image" >/dev/null
 
-# Force an upstream connection error with a token and query canary. Only the
-# normalized action may appear in stdout; nginx error output is disabled.
-docker exec "$name" wget -q -O /dev/null \
-    --header='X-Upload-Guard: caddy-internal-v1' \
-    --header='X-Client-IP: 192.0.2.123' \
-    "http://127.0.0.1:8081/drop/i/$invite_token?token=$query_sentinel" \
-    2>/dev/null || true
+# Wait until nginx has handled the canary. A detached container can exist a
+# moment before its worker is listening; checking only once made CI randomly
+# miss the expected normalized action and fail without a leak.
+ready=false
+attempt=0
+while [ "$attempt" -lt 50 ]; do
+    docker exec "$name" wget -q -O /dev/null \
+        --header='X-Upload-Guard: caddy-internal-v1' \
+        --header='X-Client-IP: 192.0.2.123' \
+        "http://127.0.0.1:8081/drop/i/$invite_token?token=$query_sentinel" \
+        2>/dev/null || true
+    logs=$(docker logs "$name" 2>&1)
+    if printf '%s\n' "$logs" | grep -F 'action=invite_ui' >/dev/null; then
+        ready=true
+        break
+    fi
+    attempt=$((attempt + 1))
+    sleep 0.1
+done
+[ "$ready" = true ] || {
+    printf '%s\n' "$logs" >&2
+    printf 'upload guard did not process the redaction canary\n' >&2
+    exit 1
+}
 
-logs=$(docker logs "$name" 2>&1)
 case "$logs" in
     *"$invite_token"*|*"$query_sentinel"*|*"?token="*|*"/drop/"*)
         printf '%s\n' "$logs" >&2
@@ -38,6 +54,5 @@ case "$logs" in
         exit 1
         ;;
 esac
-printf '%s\n' "$logs" | grep -F 'action=invite_ui' >/dev/null
 
 printf 'upload-guard upstream-error log redaction passed\n'
