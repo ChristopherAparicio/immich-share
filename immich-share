@@ -798,6 +798,15 @@ def print_terminal_qr(url: str) -> bool:
     return True
 
 
+def qr_share_url(public_link: str, password: str, include_password: bool) -> str:
+    if not include_password:
+        return public_link
+    fragment = urllib.parse.urlencode(
+        {"ipp-password": password}, quote_via=urllib.parse.quote
+    )
+    return f"{public_link}#{fragment}"
+
+
 def check_key(key: str) -> str:
     if not KEY_RE.fullmatch(key):
         die(f"unexpected share key '{key[:40]}' — rejected to prevent Caddy injection")
@@ -1268,11 +1277,19 @@ def cmd_open(args, immich: Immich, edge: Edge):
     print(f"  Expires  : {expires_at}  (TTL {args.ttl})")
     if description:
         print(f"  For      : {description}")
-    if getattr(args, "qr", False):
+    qr_with_password = getattr(args, "qr_with_password", False)
+    if getattr(args, "qr", False) or qr_with_password:
+        qr_url = qr_share_url(public_link, password, qr_with_password)
         print()
-        print("  Scan this QR code to open the share link:")
-        if print_terminal_qr(public_link):
-            print("  The QR code contains only the link. Send the password separately.")
+        if qr_with_password:
+            print("  Scan this QR code to open and unlock the share:")
+        else:
+            print("  Scan this QR code to open the share link:")
+        if print_terminal_qr(qr_url):
+            if qr_with_password:
+                print("  The QR code contains both the link and password. Treat it as a credential.")
+            else:
+                print("  The QR code contains only the link. Send the password separately.")
     print()
     print(
         "  📤 Two-channel rule: send the link by email/WhatsApp and the password by SMS/Signal/voice."
@@ -1436,10 +1453,16 @@ def main():
     po.add_argument(
         "--for", dest="for_", default="", help="recipient label (one link per person)"
     )
-    po.add_argument(
+    qr = po.add_mutually_exclusive_group()
+    qr.add_argument(
         "--qr",
         action="store_true",
         help="print a terminal QR code for the link (requires qrencode)",
+    )
+    qr.add_argument(
+        "--qr-with-password",
+        action="store_true",
+        help="print a one-scan QR containing the link and password fragment (requires qrencode)",
     )
     passwords = po.add_mutually_exclusive_group()
     passwords.add_argument(
