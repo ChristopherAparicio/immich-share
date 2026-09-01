@@ -256,9 +256,10 @@ class OwnershipTests(unittest.TestCase):
             qr_with_password=True,
         )
         password = "fixed&share=password#123"
+        output = io.StringIO()
         with mock.patch.object(module, "gen_password", return_value=password):
             with mock.patch.object(module, "print_terminal_qr", return_value=True) as qr:
-                with redirect_stdout(io.StringIO()):
+                with redirect_stdout(output):
                     module.cmd_open(args, immich, FakeEdge())
 
         qr.assert_called_once_with(
@@ -266,6 +267,8 @@ class OwnershipTests(unittest.TestCase):
             "#ipp-password=fixed%26share%3Dpassword%23123"
         )
         self.assertNotIn("?", qr.call_args.args[0])
+        self.assertIn("One-scan mode", output.getvalue())
+        self.assertNotIn("Two-channel rule", output.getvalue())
 
     def test_terminal_qr_passes_link_on_stdin_not_process_arguments(self):
         url = "https://photos.example.com/share/secret_share_key"
