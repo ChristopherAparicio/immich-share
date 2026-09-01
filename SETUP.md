@@ -639,6 +639,13 @@ Administration → Settings → Server → External Domain.
 
 ## 6. Configure the CLI
 
+The controller CLI supports macOS and Linux with Python 3.9 or newer. On
+Windows, run it inside WSL with an Ubuntu or another Linux environment; the
+controller relies on Unix file permissions, `fcntl`, SSH and local shell
+commands and is not currently a native Windows application. The public gallery
+itself remains usable from any current browser on macOS, Linux, Windows,
+Android or iOS.
+
 ```bash
 cd ~/dev/projects/immich-share
 mkdir -p ~/.config/immich-share
@@ -663,15 +670,36 @@ option is an acknowledgement, not encryption by itself.
 ./immich-share list
 ./immich-share open "Test album" --ttl 24h --for "Alex"
 ./immich-share open "Test album" --ttl 24h --for "Alex" --qr
+./immich-share open "Test album" --ttl 24h --for "Alex" --qr-with-password
 ./immich-share doctor
 ```
 
 `open` generates a password unless `--password` requests a hidden confirmation
 prompt or `--password-file` points to a private mode-0600 file. Never place a
-password value directly in a command line. The optional `--qr` output requires
-the `qrencode` executable in `PATH`. It generates the QR locally from the link
-only; send the separately printed password through another channel. A missing
-or failing `qrencode` never rolls back an otherwise valid share.
+password value directly in a command line.
+
+The optional QR modes require the `qrencode` executable in `PATH`; all other
+commands remain dependency-free beyond Python and the controller's existing
+system tools:
+
+```bash
+# macOS
+brew install qrencode
+
+# Ubuntu, Debian, or Ubuntu under WSL
+sudo apt update
+sudo apt install qrencode
+```
+
+`--qr` generates a QR locally from the link only, so the separately printed
+password should travel through another channel. `--qr-with-password` is an
+explicit convenience tradeoff: it places the password in the URL fragment
+`#ipp-password=...`. The browser removes that fragment before submitting the
+password through the existing HTTPS-protected unlock request. The fragment is
+not part of the initial HTTP request or the access-log URL. Anyone who obtains
+the combined QR can nevertheless unlock the share, so treat the image as a
+credential and keep the TTL short. A missing or failing `qrencode` never rolls
+back an otherwise valid share.
 
 ### Migration from an earlier release
 
