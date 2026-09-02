@@ -319,7 +319,7 @@ class OwnershipTests(unittest.TestCase):
         self.assertIn("log_append share_action view", rendered)
         self.assertIn("log_append share_action download", rendered)
         self.assertIn(
-            "^/share/managed_key_1234/download/jobs/[A-Za-z0-9_-]{24}/file/?$",
+            "(?i)^/share/managed_key_1234/download/jobs/[a-z0-9_-]{24}/file/?$",
             rendered,
         )
         self.assertIn("method GET DELETE", rendered)
@@ -478,6 +478,7 @@ class DeploymentBoundaryTests(unittest.TestCase):
         self.assertIn("VPS published ports", output)
         self.assertIn("Download-guard runtime logging", output)
         self.assertIn("VPS live refusal and log redaction", output)
+        self.assertIn("VPS bridge containment", output)
 
     def test_mac_wireguard_boot_is_ordered_fail_closed(self):
         script = (ROOT / "macmini" / "start-wireguard-fail-closed.sh").read_text()
@@ -486,6 +487,270 @@ class DeploymentBoundaryTests(unittest.TestCase):
         guide = (ROOT / "macmini" / "pf-wireguard.md").read_text()
         self.assertIn("single LaunchDaemon", guide)
         self.assertNotIn("after a short boot delay", guide)
+
+
+MATCHER_BLOCK_RE = re.compile(r"^@(\w+) \{\n((?:\t.*\n)+?)\}$", re.MULTILINE)
+
+
+def parse_snippet_matchers(rendered):
+    """Return {name: (methods or None, compiled path regexp)} for a snippet."""
+    matchers = {}
+    for name, body in MATCHER_BLOCK_RE.findall(rendered):
+        methods = None
+        pattern = None
+        for line in body.splitlines():
+            line = line.strip()
+            if line.startswith("method "):
+                methods = set(line.split()[1:])
+            elif line.startswith("path_regexp "):
+                pattern = re.compile(line.split(" ", 1)[1])
+            elif line.startswith("path "):
+                raise AssertionError(f"@{name} uses a prefix path matcher: {line}")
+        if pattern is None:
+            raise AssertionError(f"@{name} has no path_regexp")
+        matchers[name] = (methods, pattern)
+    return matchers
+
+
+class RouteMatcherTests(unittest.TestCase):
+    """The guard must not depend on Caddy's handle ordering or case folding."""
+
+    KEY = "managed_key_1234"
+    OTHER = "other_key_12345"
+    UUID = "0f9c6d1e-2b3a-4c5d-8e7f-a1b2c3d4e5f6"
+    JOB = "abcdefghijklmnopqrstuvwx"
+
+    def setUp(self):
+        self.rendered = module.render_share_snippet(
+            FakeEdge(), self.KEY, "album", "2026-08-27T00:00:00Z"
+        )
+        self.matchers = parse_snippet_matchers(self.rendered)
+
+    def handles(self, method, path):
+        return sorted(
+            name
+            for name, (methods, pattern) in self.matchers.items()
+            if (methods is None or method in methods) and pattern.fullmatch(path)
+        )
+
+    def test_every_matcher_is_an_anchored_case_insensitive_regexp(self):
+        self.assertGreaterEqual(len(self.matchers), 11)
+        for name, (_methods, pattern) in self.matchers.items():
+            self.assertTrue(pattern.pattern.startswith("(?i)^"), name)
+            self.assertTrue(pattern.pattern.endswith("$"), name)
+        self.assertNotIn("\tpath ", self.rendered)
+
+    def test_originals_reach_only_the_download_guard_whatever_the_case(self):
+        for path in (
+            f"/share/photo/{self.KEY}/{self.UUID}/original",
+            f"/share/Photo/{self.KEY}/{self.UUID}/original",
+            f"/share/photo/{self.KEY}/{self.UUID.upper()}/ORIGINAL",
+            f"/share/video/{self.KEY}/{self.UUID}/original/",
+            f"/SHARE/VIDEO/{self.KEY}/{self.UUID}/Original",
+        ):
+            self.assertEqual(self.handles("GET", path), [f"dl_{self.KEY}"], path)
+            self.assertEqual(self.handles("HEAD", path), [f"dl_{self.KEY}"], path)
+            self.assertEqual(self.handles("POST", path), [], path)
+
+    def test_gallery_routes_each_match_exactly_one_handler(self):
+        k, u, j = self.KEY, self.UUID, self.JOB
+        expectations = {
+            ("GET", f"/share/{k}"): "gallery_",
+            ("GET", f"/share/{k}/"): "gallery_",
+            ("GET", f"/share/photo/{k}/{u}/thumbnail"): "thumb_",
+            ("GET", f"/share/video/{k}/{u}/preview"): "preview_",
+            ("GET", f"/share/video/{k}/{u}"): "media_",
+            ("GET", f"/share/photo/{k}/{u}/fullsize"): "media_",
+            ("GET", f"/share/meta/{k}/{u}"): "meta_",
+            ("GET", f"/share/{k}/download"): "zip_",
+            ("POST", f"/share/{k}/download"): "zip_",
+            ("POST", f"/share/{k}/download/prepare"): "zip_prepare_",
+            ("POST", f"/share/{k}/download/plan"): "zip_plan_",
+            ("GET", f"/share/{k}/download/jobs/{j}"): "zip_job_",
+            ("DELETE", f"/share/{k}/download/jobs/{j}"): "zip_job_",
+            ("GET", f"/share/{k}/download/jobs/{j}/file"): "zip_file_",
+        }
+        for (method, path), prefix in expectations.items():
+            self.assertEqual(self.handles(method, path), [prefix + k], (method, path))
+
+    def test_foreign_keys_and_unknown_paths_match_nothing(self):
+        k, u = self.KEY, self.UUID
+        for path in (
+            f"/share/photo/{self.OTHER}/{u}/original",
+            f"/share/{self.OTHER}",
+            f"/share/{k}/anything",
+            f"/share/photo/{k}/not-a-uuid/original",
+            f"/share/photo/{k}/{u}/original/extra",
+            f"/share/{k}/download/jobs/short/file",
+            f"/s/{k}",
+            "/share/static/style.css",
+            "/share/unlock",
+        ):
+            self.assertEqual(self.handles("GET", path), [], path)
+
+
+class MachineOutputTests(unittest.TestCase):
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        cfg = configparser.ConfigParser()
+        cfg.read_dict(
+            {"sharing": {"managed_state_file": str(Path(self.temp.name) / "state.json")}}
+        )
+        self.state = module.ManagedShares(cfg)
+
+    def tearDown(self):
+        self.temp.cleanup()
+
+    def test_open_json_puts_one_object_on_stdout_and_progress_on_stderr(self):
+        immich = OpenImmich([])
+        args = SimpleNamespace(
+            album="Test album",
+            ttl="24h",
+            max_ttl=timedelta(days=30),
+            prompt_password=False,
+            password_file=None,
+            for_="recipient",
+            allow_download=True,
+            managed_state=self.state,
+            json_output=True,
+        )
+        out, err = io.StringIO(), io.StringIO()
+        with mock.patch.object(module, "gen_password", return_value="fixed.pass.word.1234"):
+            with redirect_stdout(out), redirect_stderr(err):
+                module.cmd_open(args, immich, FakeEdge())
+        lines = out.getvalue().splitlines()
+        self.assertEqual(len(lines), 1)
+        payload = json.loads(lines[0])
+        self.assertEqual(payload["key"], "new_share_key_1234")
+        self.assertEqual(payload["link"], "https://photos.example.com/share/new_share_key_1234")
+        self.assertEqual(payload["password"], "fixed.pass.word.1234")
+        self.assertEqual(payload["description"], "recipient")
+        self.assertEqual(payload["album"], {"name": "Test album", "assetCount": 1})
+        self.assertTrue(payload["allowDownload"])
+        self.assertIn("Immich link created", err.getvalue())
+        self.assertNotIn("Immich link created", out.getvalue())
+
+    def test_list_json_reports_ownership_and_portal_state(self):
+        immich = FakeImmich([link("managed_key_1234"), link("external_key_123", expired=True)])
+        self.state.add(link("managed_key_1234"))
+        edge = FakeEdge(["00-globals.caddy", "managed_key_1234.caddy", "orphan_orphan_orphan.caddy"])
+        args = SimpleNamespace(managed_state=self.state, json_output=True)
+        out = io.StringIO()
+        with redirect_stdout(out):
+            module.cmd_list(args, immich, edge)
+        payload = json.loads(out.getvalue())
+        by_key = {row["key"]: row for row in payload["shares"]}
+        self.assertTrue(by_key["managed_key_1234"]["managed"])
+        self.assertTrue(by_key["managed_key_1234"]["portalOpen"])
+        self.assertFalse(by_key["external_key_123"]["managed"])
+        self.assertTrue(by_key["external_key_123"]["expired"])
+        self.assertEqual(payload["orphanSnippets"], ["orphan_orphan_orphan"])
+
+
+class HardeningTests(unittest.TestCase):
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+
+    def tearDown(self):
+        self.temp.cleanup()
+
+    def _state(self, name):
+        cfg = configparser.ConfigParser()
+        cfg.read_dict({"sharing": {"managed_state_file": str(Path(self.temp.name) / name)}})
+        return module.ManagedShares(cfg)
+
+    def test_state_file_symlink_or_shared_mode_is_refused(self):
+        real = Path(self.temp.name) / "real.json"
+        real.write_text('{"version": 1, "shares": {}}')
+        real.chmod(0o600)
+        (Path(self.temp.name) / "link.json").symlink_to(real)
+        with redirect_stderr(io.StringIO()):
+            with self.assertRaises(SystemExit):
+                self._state("link.json")._read()
+        real.chmod(0o644)
+        with redirect_stderr(io.StringIO()):
+            with self.assertRaises(SystemExit):
+                self._state("real.json")._read()
+        real.chmod(0o600)
+        self.assertEqual(self._state("real.json")._read()["shares"], {})
+
+    def test_find_album_accepts_an_album_uuid(self):
+        immich = module.Immich.__new__(module.Immich)
+        albums = [
+            {"id": "0f9c6d1e-2b3a-4c5d-8e7f-a1b2c3d4e5f6", "albumName": "Summer"},
+            {"id": "11111111-2222-4333-8444-555555555555", "albumName": "Summer"},
+        ]
+        immich._call = lambda method, path, body=None: albums
+        self.assertEqual(
+            immich.find_album("0F9C6D1E-2B3A-4C5D-8E7F-A1B2C3D4E5F6")["albumName"], "Summer"
+        )
+        with redirect_stderr(io.StringIO()):
+            with self.assertRaises(SystemExit):
+                immich.find_album("Summer")  # ambiguous by name
+            with self.assertRaises(SystemExit):
+                immich.find_album("99999999-2222-4333-8444-555555555555")
+
+    def test_forward_containment_probe_maps_exit_codes_to_reasons(self):
+        edge = module.Edge.__new__(module.Edge)
+        for code, fragment in ((41, "DOCKER-USER"), (42, "immich-tunnel")):
+            edge._ssh = lambda *_a, code=code, **_k: SimpleNamespace(returncode=code, stdout="", stderr="")
+            with self.assertRaises(RuntimeError) as ctx:
+                edge.probe_forward_containment()
+            self.assertIn(fragment, str(ctx.exception))
+        commands = []
+        rules = "\n".join(
+            (
+                "-A DOCKER-USER -d 192.0.2.10/32 -i immich-tunnel -o wg0 -p tcp -m tcp --dport 2283 -m comment --comment immich-share -j ACCEPT",
+                "-A DOCKER-USER -d 192.0.2.11/32 -i immich-uptun -o wg0 -p tcp -m tcp --dport 2383 -m comment --comment immich-share -j ACCEPT",
+                "-A DOCKER-USER -i immich-tunnel -m comment --comment immich-share -j DROP",
+                "-A DOCKER-USER -i immich-uptun -m comment --comment immich-share -j DROP",
+                "-A DOCKER-USER -j RETURN",
+            )
+        )
+
+        def ok(remote, stdin=None):
+            commands.append(remote)
+            return SimpleNamespace(returncode=0, stdout=rules, stderr="")
+
+        edge._ssh = ok
+        self.assertIn("NAS filter", edge.probe_forward_containment())
+        self.assertIn("iptables -S DOCKER-USER", commands[0])
+        self.assertIn("immich-tunnel", commands[0])
+
+        # Any broader rule placed before the owned rules could bypass their
+        # DROP, and any extra option on an owned ACCEPT broadens the contract.
+        for bad in (
+            "-A DOCKER-USER -j ACCEPT\n" + rules,
+            rules.replace("--dport 2283", "--dport 22"),
+            rules.replace("-d 192.0.2.10/32 ", ""),
+            rules.replace("-i immich-uptun -m comment", "-i immich-uptun -s 0.0.0.0/0 -m comment"),
+        ):
+            edge._ssh = lambda *_a, bad=bad, **_k: SimpleNamespace(
+                returncode=0, stdout=bad, stderr=""
+            )
+            with self.assertRaises(RuntimeError):
+                edge.probe_forward_containment()
+
+    def test_nas_doctor_expects_the_deployed_wireguard_capabilities(self):
+        cfg = configparser.ConfigParser()
+        cfg.read_dict({"controller": {"mode": "nas"}})
+        checks = dict(module.probe_nas_controller(cfg))
+        hardening = checks["NAS tunnel hardening"]
+        deployed = 'true|["ALL"]|["NET_ADMIN","DAC_READ_SEARCH"]|["no-new-privileges:true"]'
+        with mock.patch.object(module, "run_local", return_value=deployed):
+            self.assertIn("DAC_READ_SEARCH", hardening())
+        with mock.patch.object(
+            module, "run_local", return_value='true|["ALL"]|["NET_ADMIN"]|["no-new-privileges:true"]'
+        ):
+            with self.assertRaises(RuntimeError):
+                hardening()
+        with mock.patch.object(
+            module,
+            "run_local",
+            return_value='true|["ALL"]|["NET_ADMIN","DAC_READ_SEARCH","SYS_ADMIN"]|["no-new-privileges:true"]',
+        ):
+            with self.assertRaises(RuntimeError):
+                hardening()
 
 
 if __name__ == "__main__":

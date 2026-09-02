@@ -2,14 +2,27 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
+    <!-- Root LaunchDaemon: runs the fail-closed pf + WireGuard start script once
+         per boot, so it logs to /var/log rather than a user home. It is a
+         one-shot (no KeepAlive); ThrottleInterval only bounds manual restarts.
+         wg-quick is the Homebrew build (see start-wireguard-fail-closed.sh) and
+         itself execs wg/wireguard-go/bash by name, so launchd's minimal PATH
+         must include the Homebrew prefix. -->
     <key>Label</key>
     <string>local.immich-share-wireguard</string>
     <key>ProgramArguments</key>
     <array>
         <string>/usr/local/sbin/immich-share-wireguard-start</string>
     </array>
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>PATH</key>
+        <string>/opt/homebrew/bin:/opt/homebrew/sbin:/usr/local/bin:/usr/local/sbin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+    </dict>
     <key>RunAtLoad</key>
     <true/>
+    <key>ThrottleInterval</key>
+    <integer>30</integer>
     <key>StandardOutPath</key>
     <string>/var/log/immich-share-wireguard.log</string>
     <key>StandardErrorPath</key>

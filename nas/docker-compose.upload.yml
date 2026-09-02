@@ -17,6 +17,9 @@ services:
       - no-new-privileges:true
     sysctls:
       - net.ipv4.ip_forward=0
+      # No IPv6 sysctls here (absent on IPv6-less kernels, which would keep
+      # the container from starting); the entrypoint installs an ip6tables
+      # OUTPUT/FORWARD DROP policy and the upload doctor certifies it.
     environment:
       WG_OUTPUT_LOCKDOWN: "true"
       WG_INTERNAL_UPSTREAM_HOST: upload-drop

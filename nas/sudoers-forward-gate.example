@@ -11,6 +11,8 @@ Cmnd_Alias IMMICH_SHARE_FORWARD = /usr/bin/docker start wg-nginx-filter, \
     /usr/local/sbin/immich-share-upload-admin open, \
     /usr/local/sbin/immich-share-upload-admin list, \
     /usr/local/sbin/immich-share-upload-admin close, \
-    /usr/local/sbin/immich-share-upload-admin sweep
+    /usr/local/sbin/immich-share-upload-admin sweep, \
+    /usr/bin/test -f /var/log/immich-share/denied.log, \
+    /usr/bin/tail -F -n0 /var/log/immich-share/denied.log
 
 immich-share-gate ALL=(root) NOPASSWD: IMMICH_SHARE_FORWARD

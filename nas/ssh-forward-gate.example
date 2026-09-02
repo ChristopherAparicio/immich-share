@@ -1,3 +1,9 @@
 # Prefix the dedicated controller public key with this restriction in the NAS
-# account's authorized_keys. Keep the entire entry on one line.
-restrict,command="/usr/local/sbin/immich-share-forward-command" ssh-ed25519 <CONTROLLER_PUBLIC_KEY> immich-share-forward-gate
+# account's authorized_keys. Keep the entire entry on one line. `from=` pins the
+# key to the source address the NAS sshd actually sees for the controller: its
+# fixed LAN or tailnet address. Never use the controller's WireGuard address
+# here: the NAS WireGuard interface lives inside wg-tunnel (not on the host),
+# the NAS peer only accepts the VPS /32, and the VPS drops wg0-to-wg0 traffic,
+# so the host sshd can never observe that address. A stolen key is then
+# useless from any other host.
+restrict,from="<CONTROLLER_LAN_ADDRESS>",command="/usr/local/sbin/immich-share-forward-command" ssh-ed25519 <CONTROLLER_PUBLIC_KEY> immich-share-forward-gate

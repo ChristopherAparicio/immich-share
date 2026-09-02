@@ -8,4 +8,6 @@ Host vps-photos-via-wg
     ClearAllForwardings yes
     RequestTTY no
     HostKeyAlias vps-photos-wireguard
+    # Requires WG_CONTROLLER_SSH_PEER=<WG_VPS_ADDRESS> on wg-tunnel; the tunnel
+    # namespace's OUTPUT allowlist drops this TCP/22 connection otherwise.
     ProxyCommand docker exec -i wg-tunnel nc %h %p

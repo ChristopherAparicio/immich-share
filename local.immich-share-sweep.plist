@@ -4,8 +4,11 @@
 <dict>
 	<!-- Automatically closes the portal: removes expired links and Caddy
 	     snippets, then disables the NAS forward when no share remains active.
-	     Install: copy to ~/Library/LaunchAgents/, then run
-	     launchctl load ~/Library/LaunchAgents/local.immich-share-sweep.plist -->
+	     Install: replace <CONTROLLER_INSTALL_DIR> and <CONTROLLER_HOME> (launchd
+	     does not expand ~), run mkdir -p ~/Library/Logs/immich-share, copy to
+	     ~/Library/LaunchAgents/, then run
+	     launchctl load ~/Library/LaunchAgents/local.immich-share-sweep.plist.
+	     Logs live under the operator's private home, not world-writable /tmp. -->
 	<key>Label</key>
 	<string>local.immich-share-sweep</string>
 	<key>ProgramArguments</key>
@@ -18,8 +21,8 @@
 	<key>RunAtLoad</key>
 	<true/>
 	<key>StandardOutPath</key>
-	<string>/tmp/immich-share-sweep.log</string>
+	<string>&lt;CONTROLLER_HOME&gt;/Library/Logs/immich-share/sweep.log</string>
 	<key>StandardErrorPath</key>
-	<string>/tmp/immich-share-sweep.log</string>
+	<string>&lt;CONTROLLER_HOME&gt;/Library/Logs/immich-share/sweep.log</string>
 </dict>
 </plist>

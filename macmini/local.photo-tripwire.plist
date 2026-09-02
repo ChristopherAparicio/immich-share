@@ -1,16 +1,22 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0"><dict>
+  <!-- Replace <CONTROLLER_INSTALL_DIR> with the private checkout path and
+       <CONTROLLER_HOME> with the controller account's home directory: launchd
+       does not expand ~ or $HOME. Create the log directory once with
+       mkdir -p ~/Library/Logs/immich-share before loading the agent. -->
   <key>Label</key><string>local.photo-tripwire</string>
   <key>ProgramArguments</key><array>
     <string>&lt;CONTROLLER_INSTALL_DIR&gt;/macmini/denied-tripwire.sh</string>
   </array>
   <key>EnvironmentVariables</key><dict>
-    <key>NAS_LOG</key><string>&lt;PRIVATE_NAS_DENIED_LOG_PATH&gt;</string>
-    <key>NAS_SSH_TARGET</key><string>&lt;NAS_SSH_ALIAS&gt;</string>
+    <!-- The forced-command gate alias from config.example.ini ([nas]); the
+         script runs only the exact "tripwire follow" command, never a shell. -->
+    <key>NAS_SSH_TARGET</key><string>nas-photo-gate</string>
   </dict>
   <key>KeepAlive</key><true/>
+  <key>ThrottleInterval</key><integer>30</integer>
   <key>RunAtLoad</key><true/>
-  <key>StandardOutPath</key><string>/tmp/photo-tripwire.log</string>
-  <key>StandardErrorPath</key><string>/tmp/photo-tripwire.log</string>
+  <key>StandardOutPath</key><string>&lt;CONTROLLER_HOME&gt;/Library/Logs/immich-share/photo-tripwire.log</string>
+  <key>StandardErrorPath</key><string>&lt;CONTROLLER_HOME&gt;/Library/Logs/immich-share/photo-tripwire.log</string>
 </dict></plist>

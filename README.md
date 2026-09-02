@@ -71,8 +71,8 @@ quarantine service—not Immich, the LAN, or the admin machine. See
 - [WireGuard](https://www.wireguard.com) — the home↔VPS tunnel
 
 **This repo:**
-- `immich-share` — the CLI: `open` / `list` / `adopt` / `sync` / `close` / `sweep` / `doctor`. Creates an Immich share link **and** opens the matching Caddy path + home-side forward, then closes everything on expiry. `doctor` is read-only and, in separate-controller mode, uses a narrow forced NAS command to certify the deployed trust boundary.
-- `macmini/photo-share-monitor.py` — an authenticated, rate-limited web console (create/list/close shares, per-album telemetry) + a `/devhub` endpoint for dashboards/alerts. It binds to loopback by default; remote use requires an explicitly acknowledged encrypted private tunnel. Self-contained HTML/CSS/JS, no framework, no external CDN.
+- `immich-share` — the CLI: `open` / `list` / `adopt` / `sync` / `close` / `sweep` / `doctor`. Creates an Immich share link **and** opens the matching Caddy path + home-side forward, then closes everything on expiry. `open --json` and `list --json` emit machine-readable output (progress goes to stderr) so other tools never parse the human text. `doctor` is read-only and, in separate-controller mode, uses a narrow forced NAS command to certify the deployed trust boundary.
+- `macmini/photo-share-monitor.py` — an authenticated, rate-limited web console (create/list/close shares, per-album telemetry) + a `/devhub` endpoint for dashboards/alerts. It binds to loopback by default; remote use requires an explicitly acknowledged encrypted private tunnel. Self-contained HTML/CSS/JS, no framework, no external CDN. It drives the CLI through `open --json`/`close` and imports the CLI module for configuration, secrets and the Immich client, so there is one implementation of each. Console API (version 2.1): `/devhub` reports `status` `ok`/`warn`/`error`, a `telemetry` object (`status` `ok`/`stale`/`unknown`, `peers` nullable, `expected_peers`) and the metric `ratelimit_429` (formerly `auth_fail`, which counted Caddy 429s all along); `/shares` answers HTTP 502 with a generic error while Immich is unreachable.
 - `nas/`, `vps/`, `macmini/` — the deployment artifacts (compose, Caddyfile, WireGuard, nginx filter, pf rules).
 - `nas/docker-compose.upload.yml` and `vps/docker-compose.upload.yml` — optional
   write-side deployment overlays, kept separate so a gallery update cannot
@@ -98,6 +98,25 @@ In short:
 3. Caddy + `immich-public-proxy` on the VPS; a filtering nginx on the NAS.
 4. `immich-share open "My Album" --ttl 48h --for "Alex"` → link + generated password.
 
+### Common sharing workflows
+
+`immich-share` publishes albums. Use Immich's [advanced search
+filters](https://docs.immich.app/features/searching) to prepare an album when
+the starting point is a person or a selection of assets:
+
+| What to share | Prepare it in Immich |
+|---|---|
+| An existing album | No preparation; open it directly with `immich-share open`. |
+| One person | Filter by that face, select the matching assets, and add them to a new or existing album. |
+| Several people together | Filter for all selected faces, then add the results to an album. |
+| Any of several people | Filter for any selected face, then add the combined results to an album. |
+| An event or manual selection | Select the assets and add them to an album. |
+
+Albums reference the existing assets, so placing a photo in several albums does
+not duplicate its media file. A face-search album is a point-in-time selection:
+add newly recognized photos to it when needed. The `--for` option labels the
+link's recipient; it does not select a person shown in the photos.
+
 The controller may run on a separate trusted machine or directly on the NAS.
 The separate profile splits the photo library, Immich API key, and VPS SSH
 administration across trust zones. The NAS-controller profile needs fewer
@@ -115,7 +134,7 @@ Git history.
 Most tutorials wave security away. This one has a real model — read [`SETUP.md`](SETUP.md) and the inline docs:
 
 - **The provider *can* technically read RAM and a short-lived ZIP cache during a share window.** We don't pretend otherwise. The window is narrow and the cache is deleted automatically. True zero-knowledge requires a different design (e.g. [Ente](https://ente.io)) with export friction.
-- **A compromised VPS is contained by topology, not by the VPS itself:** filtering nginx (fail-closed) on the trusted side, no route to the LAN, `pf` blocking the admin machine, and a `denied.log` tripwire that pings you on the first probe.
+- **A compromised VPS is contained by topology, not by the VPS itself:** filtering nginx (fail-closed) on the trusted side, no route to the LAN, `pf` blocking the admin machine, and a `denied.log` tripwire that pings you on the first probe (it follows the log through the exact `tripwire follow` forced command, so the admin machine holds no NAS shell). On the VPS itself, a compromised IPP container shares no Docker network with the upload guard and its bridge may forward only to the two NAS filter ports (`DOCKER-USER` rules installed by the `vps/containment/` systemd unit, independent of the tunnel's lifecycle and verified by `doctor`); the VPS never relays between WireGuard peers.
 - **Caveat on "stateless":** the proxy writes no photos, but Caddy keeps a
   short-lived access log on the VPS. The complete request URI is redacted before
   that log is written; per-album telemetry uses a truncated one-way SHA-256
@@ -141,6 +160,28 @@ Most tutorials wave security away. This one has a real model — read [`SETUP.md
 ## Configuration
 
 Copy `config.example.ini` to `~/.config/immich-share/config.ini` and fill it in. Secrets (`config.ini`, `api-key`, `*.key`) are gitignored — **never commit them**. Create a **scoped** Immich API key (shared-links + album read only), never the admin key.
+
+### Immich account scope
+
+An Immich API key belongs to the Immich account that created it. The controller
+uses that identity to discover albums and to create, list, and delete shared
+links. It can therefore operate only on albums and links that Immich makes
+available to that account. Access to a shared album does not necessarily grant
+permission to publish it; Immich remains responsible for enforcing the album's
+permissions.
+
+The current controller is single-account: one configuration selects one API
+key and one managed-share registry. Do not run independent account profiles
+against the same VPS `shares_dir`. Each profile would treat its own registry as
+authoritative, so `sync`, `close`, or `sweep` could remove another profile's
+Caddy routes or disable the NAS forward while its shares are still active. For
+a NAS with several Immich users, designate one account to manage the albums
+published through Immich Share. Proper multi-account support requires one
+coordinator that reconciles the union of every account's active shares.
+
+The API key remains on the trusted controller. Creating the Immich shared link
+uses that key, while publishing its route on the VPS uses the configured SSH
+transport. The VPS never receives the Immich API key.
 
 Sharing defaults live in `[sharing]`:
 
@@ -197,8 +238,17 @@ HTML, thumbnails, preview zoom and metadata bypass it, so normal browsing is
 not throttled. Caddy does not otherwise perform fair bandwidth sharing: without
 this guard, concurrent TCP streams simply compete for the available link.
 
-ZIP responses pass through the same guard at 2 MiB/s, with exactly one active
-ZIP lifecycle globally. The gallery shows an English progress dialog while the
+Every generated Caddy route is an anchored, case-insensitive regular expression
+and the routes of one share are mutually exclusive, so neither Caddy's handle
+ordering nor a differently cased URL (`/share/Photo/…/Original`) can steer an
+original past the guard; `scripts/test-immich-share.py` asserts this. One
+documented exemption remains: video playback uses the size-less
+`/share/video/<key>/<id>` route, on which the proxy streams the original video
+bytes without the guard so that playback is not throttled or capped per IP.
+
+ZIP responses pass through the same guard at 2 MiB/s. Up to three prepared
+archives may transfer concurrently (`ZIP_GLOBAL`), while only one new archive
+is staged at a time. The gallery shows an English progress dialog while the
 archive is fetched and finalized, then exposes an explicit download button with
 the exact size. Up to three additional visitors wait in a process-local FIFO;
 closing the dialog keeps the request queued, while **Leave queue** cancels it.

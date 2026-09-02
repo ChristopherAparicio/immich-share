@@ -92,6 +92,15 @@ sudo ufw enable
 
 Remove any swap entry from `/etc/fstab` using the operator's preferred editor.
 
+Docker manages its own `FORWARD`/`DOCKER-USER` iptables chains, and the
+`immich-share-containment` unit (section 5, "Forwarding containment") adds the
+bridge egress rules to `DOCKER-USER`. `ufw disable` and `ufw reload` flush
+those chains. After either command, or any other `ufw` change, run
+`sudo systemctl restart docker immich-share-containment` (the unit is
+`PartOf=docker.service`, so restarting Docker alone re-applies it too) and
+repeat the containment checks before reopening a share. The tunnel's own
+`wg0 -> wg0` drop lives in `wg0.conf` and is restored by `wg-quick@wg0`.
+
 ## 3. WireGuard topology
 
 The VPS is the hub. In the recommended separate-controller profile, the NAS and
@@ -172,7 +181,20 @@ deployed copies.
 For the optional NAS-controller profile, keep the data tunnel in its container
 and transport controller SSH with
 `ProxyCommand docker exec -i wg-tunnel nc %h %p`. This avoids exposing SSH
-publicly or mounting the Docker socket into another container. Follow
+publicly or mounting the Docker socket into another container. Because the
+tunnel namespace is `OUTPUT DROP` with a four-rule allowlist, that `nc`
+connection is refused unless you opt in explicitly: set
+`WG_CONTROLLER_SSH_PEER=<WG_VPS_ADDRESS>` in the ignored `nas/.env` and recreate
+`wg-tunnel`. The entrypoint then adds exactly one extra accept (TCP/22 to that
+`/32`). The share doctor does not take the expected peer from the container it
+certifies: record it in the root-owned `/etc/immich-share/doctor.env` (mode
+0600, single line `WG_CONTROLLER_SSH_PEER=<WG_VPS_ADDRESS>`; see
+`nas/controller/README.md` for the exact commands). The doctor then requires
+the container to carry that same value and certifies five rules instead of
+four. With the file absent or empty it requires exactly four rules and fails if
+the container carries the variable. Leave the variable empty and the file
+absent in the separate-controller profile, and never set it on
+`wg-upload-tunnel`: the upload doctor always fails on it. Follow
 `nas/controller/README.md`; run its read-only preflight before installing any
 controller secret on the NAS.
 
@@ -183,10 +205,29 @@ root-owned `/usr/local/sbin/immich-share-forward-command`, create a dedicated
 group. Validate and install `nas/sudoers-forward-gate.example` so the account
 may invoke only the exact read filter, upload filter, doctor and invitation
 helper actions listed there; prefix the key in
-`authorized_keys` exactly as shown by `nas/ssh-forward-gate.example`. Merge
+`authorized_keys` exactly as shown by `nas/ssh-forward-gate.example`, replacing
+`<CONTROLLER_LAN_ADDRESS>` in `from=` with the controller's fixed LAN or tailnet
+address as the NAS sshd sees it. Never use the controller's WireGuard address:
+the NAS WireGuard interface lives inside `wg-tunnel`, its peer accepts only the
+VPS `/32`, and the VPS drops wg0-to-wg0 traffic, so the host sshd can never
+observe it. Merge
 `nas/ssh-config-controller.example` on the controller. Test `forward status`,
 then verify that `uname`, an interactive shell, port forwarding, agent
 forwarding, and PTY allocation are all refused.
+
+The tripwire needs no NAS shell either. The gate's exact `tripwire follow`
+command runs a fixed `tail -F -n0 /var/log/immich-share/denied.log` as root, so
+create that directory as a symlink to (or bind mount of) the deployed `nas/logs`
+directory, for example `sudo ln -s <PRIVATE_NAS_DIR>/logs /var/log/immich-share`.
+The gate refuses `tripwire follow` (exit 65) when that path does not exist so a
+misconfigured tripwire fails loudly instead of tailing nothing, and the share
+doctor verifies that the path resolves into the filter's log mount.
+`macmini/denied-tripwire.sh` then follows it through the `nas-photo-gate` alias
+and coalesces alerts to at most one ntfy notification per minute; run it under
+`macmini/local.photo-tripwire.plist` with `NAS_SSH_TARGET=nas-photo-gate`. It
+ignores refusals logged from `127.0.0.1`: those are the doctor's own probes
+through the filter's private loopback listener, which nothing outside the
+tunnel namespace can spoof.
 
 Install the helper with owner `root:root` and mode 0755. Validate the sudoers
 file with `visudo -cf` before installing it as root-owned mode 0440 under
@@ -318,9 +359,104 @@ docker compose exec -T caddy caddy validate --config /etc/caddy/Caddyfile
 docker compose exec -T download-guard nginx -t
 ```
 
+When upgrading a deployment created before the network split (Caddy on the
+private `upload_net`, the `tunnel_net` bridge pinned to the interface name
+`immich-tunnel`, and `upload-guard` moved off `app_net`), Compose cannot
+change an existing network in place. Stop the optional upload edge first if it
+is installed, then recreate the base stack, then the upload edge:
+
+```bash
+cd /srv/photo-share
+docker compose -f docker-compose.upload.yml down   # only if uploads are installed
+docker compose down
+docker compose up -d --build
+```
+
 After a routing change, run `./immich-share sync` on the admin machine. It
 regenerates snippets only for links recorded in the local managed-share state;
 it never publishes an unrelated Immich link.
+
+### Forwarding containment on the VPS
+
+`tunnel_net` is an ordinary NAT bridge: without extra rules, IPP could reach
+the whole Internet and the admin peer's WireGuard address through the host,
+and a host that had `net.ipv4.ip_forward=1` before Docker started keeps
+`FORWARD` at ACCEPT, so the VPS could relay packets between the NAS and admin
+peers. Two independent pieces close this:
+
+- The deployed `wg0.conf` copied from `vps/wireguard/wg0-vps.conf` drops
+  wg0-to-wg0 forwarding from PostUp. That rule belongs to the tunnel and is
+  the only firewall rule in `wg0.conf`.
+- The `immich-share-containment` systemd oneshot from `vps/containment/` owns
+  the `DOCKER-USER` rules that let the pinned bridges forward only to the
+  filter they exist for: `immich-tunnel` (IPP) to `<WG_NAS_ADDRESS>:2283` and
+  `immich-uptun` (`upload-guard`) to `<UPLOAD_NAS_WG_ADDRESS>:2383`.
+  Everything else forwarded from those bridges is dropped, including
+  cross-container traffic on the same bridge. Caddy uses other bridges and
+  keeps its ACME egress. The rules are deliberately not installed from
+  `wg0.conf`: `systemctl restart wg-quick@wg0` would remove them in PostDown
+  and leave both containers with open egress until the tunnel came back.
+
+The script reads `NAS_WG_ADDRESS` and `UPLOAD_NAS_WG_ADDRESS` from
+`/srv/photo-share/.env` (override the path with a drop-in setting
+`Environment=CONTAINMENT_ENV_FILE=...`). The `immich-uptun` ACCEPT is added
+only when `UPLOAD_NAS_WG_ADDRESS` holds a real address (or `CONTAINMENT_UPLOAD=on`
+is set in the same file); both DROP rules are always installed, so an upload
+bridge that appears before uploads are configured has no egress at all. Every
+run removes exactly the rules tagged `immich-share`, plus any legacy rule that
+names one of the two bridges, and re-inserts the current set at the top of
+`DOCKER-USER`; other users of the chain are left alone and the chain is never
+flushed. Temporary DROP guards remain in front of both bridges during every
+replacement and are removed only after the complete new allowlist is present,
+so a failed update leaves the bridges closed. Interface names are pinned in the
+two Compose files and rules that name an interface are accepted before the
+bridge exists, so the order of Docker, `docker compose up` and this unit does
+not matter.
+
+Install it on the VPS:
+
+```bash
+sudo install -m 0755 vps/containment/immich-share-containment.sh /usr/local/sbin/immich-share-containment.sh
+sudo install -m 0644 vps/containment/immich-share-containment.service /etc/systemd/system/immich-share-containment.service
+sudo systemctl daemon-reload
+sudo systemctl enable --now immich-share-containment
+sudo systemctl status immich-share-containment --no-pager
+```
+
+Re-run `sudo systemctl restart immich-share-containment` after editing the
+addresses in `.env`, and `sudo systemctl restart docker immich-share-containment`
+after any `ufw` command, because `ufw reload`/`ufw disable` flush Docker's
+chains (section 2). `sudo immich-share-containment.sh remove` deletes only the
+owned rules and is the decommissioning step; stopping the unit leaves them in
+place on purpose.
+
+If `wg0.conf` was deployed from an earlier release that carried the
+`DOCKER-USER` PostUp/PostDown lines, replace it with the current
+`vps/wireguard/wg0-vps.conf` (placeholders and peers filled in), install the
+unit as above, then `sudo systemctl restart wg-quick@wg0`. The first run of
+the unit removes the legacy rules by interface name. Verify from the VPS, with
+a throwaway container on the IPP bridge (`photo-share_tunnel_net` when the
+project directory is `/srv/photo-share`):
+
+```bash
+sudo iptables -S FORWARD | grep -- '-i wg0 -o wg0 -j DROP'
+sudo iptables -S DOCKER-USER
+# Expected, in this order (the upload ACCEPT only when uploads are configured):
+#   -A DOCKER-USER -d <WG_NAS_ADDRESS>/32 -i immich-tunnel -o wg0 -p tcp -m tcp --dport 2283 -m comment --comment immich-share -j ACCEPT
+#   -A DOCKER-USER -d <UPLOAD_NAS_WG_ADDRESS>/32 -i immich-uptun -o wg0 -p tcp -m tcp --dport 2383 -m comment --comment immich-share -j ACCEPT
+#   -A DOCKER-USER -i immich-tunnel -m comment --comment immich-share -j DROP
+#   -A DOCKER-USER -i immich-uptun -m comment --comment immich-share -j DROP
+sudo systemctl restart wg-quick@wg0 && sudo iptables -S DOCKER-USER | grep -c -- '--comment immich-share'   # unchanged
+docker run --rm --network photo-share_tunnel_net alpine:3.22 sh -c '
+  nc -zw3 <WG_NAS_ADDRESS> 2283 && echo "read filter reachable";
+  nc -zw3 <WG_CONTROLLER_ADDRESS> 22 || echo "admin peer blocked";
+  nc -zw3 <UPLOAD_NAS_WG_ADDRESS> 2383 || echo "upload filter blocked from IPP bridge";
+  nc -zw3 <ANY_PUBLIC_ADDRESS> 443 || echo "Internet egress blocked"'
+```
+
+The read-filter probe succeeds only while a share keeps the NAS forward
+running; the three refusals must hold at all times. `immich-share doctor`
+repeats the `DOCKER-USER` check over SSH on every run.
 
 Images and upstream versions are pinned. IPP source and releases live in the
 separate AGPL fork linked from `THIRD_PARTY_NOTICES.md`. Updating IPP is an
@@ -405,7 +541,18 @@ handler:
 docker compose -f docker-compose.upload.yml config --quiet
 docker compose -f docker-compose.upload.yml up -d --build upload-guard
 docker compose -f docker-compose.upload.yml exec -T upload-guard nginx -t
+docker network inspect photo-share_upload_net \
+  --format '{{range .Containers}}{{.Name}} {{end}}'   # caddy upload-guard only
+docker network inspect photo-share_app_net photo-share_tunnel_net \
+  --format '{{range .Containers}}{{.Name}} {{end}}'   # no upload-guard
 ```
+
+`upload-guard` authorizes on a constant marker that Caddy overwrites, so it
+must be reachable only by Caddy. It joins the private `upload_net` shared with
+Caddy and its own NAT bridge `upload_tunnel_net` (`immich-uptun`) toward the
+upload filter; it must never appear on `app_net` or IPP's `tunnel_net`. The
+containment rules above restrict `immich-uptun` to
+`<UPLOAD_NAS_WG_ADDRESS>:2383`.
 
 `drop-portal.caddy.template` is a template, not an always-on configuration.
 For a controlled invitation, use this fail-closed order:
@@ -661,6 +808,26 @@ store it at the configured `api_key_file`, and set mode 600. Edit `config.ini`
 to provide the local Immich URL, public domain, VPS SSH alias, and NAS forward
 commands.
 
+Create the key while signed in as the Immich account designated to manage
+public shares. An API key belongs to that account: album lookup and shared-link
+creation, listing, and deletion all run with its Immich permissions. Seeing an
+album shared by another Immich user does not guarantee permission to publish
+it, so confirm the operation with a non-sensitive test album owned or managed
+by the designated account.
+
+The current controller supports one Immich account per deployment. Keep one API
+key and one `managed_state_file` authoritative for the shared VPS
+`shares_dir`. Do not run separate account configurations against that directory:
+`sync`, `close`, and `sweep` may remove routes absent from the current profile
+or stop the NAS forward even though another profile still has active shares.
+On a multi-user NAS, centralize the albums intended for public sharing under
+the designated account until a coordinator that merges all account states is
+implemented. Never work around this limitation with an administrator API key.
+
+The API key is used only between the trusted controller and Immich. The second
+half of publication writes the generated Caddy route over the configured SSH
+transport, so the API key is never installed on or sent to the VPS.
+
 Use HTTPS between a separate controller and Immich. Plain HTTP is accepted only
 on loopback; when an encrypted WireGuard, Tailscale, or SSH tunnel carries the
 whole connection, set `allow_http_over_private_tunnel = true` explicitly. This
@@ -714,10 +881,17 @@ Install the expiry sweep timer on macOS:
 
 ```bash
 # First replace <CONTROLLER_INSTALL_DIR> in the plist with the private local
-# installation path.
+# installation path and <CONTROLLER_HOME> with the controller account's home
+# directory: launchd does not expand ~. The same two placeholders apply to
+# macmini/local.photo-share-monitor.plist and macmini/local.photo-tripwire.plist.
+mkdir -p ~/Library/Logs/immich-share
 cp local.immich-share-sweep.plist ~/Library/LaunchAgents/
 launchctl load ~/Library/LaunchAgents/local.immich-share-sweep.plist
 ```
+
+Agent logs are written under `~/Library/Logs/immich-share/` (mode 0600
+directory recommended: `chmod 700 ~/Library/Logs/immich-share`) rather than
+world-writable `/tmp`.
 
 To run the controller directly on the NAS instead, use
 `nas/controller/config.example.ini`, `ssh-config.example`, and the cron example.
@@ -782,12 +956,38 @@ From the VPS:
 - [ ] The share doctor certifies exactly four steady-state OUTPUT accepts:
       loopback, established replies, the literal WireGuard UDP endpoint, and
       the current `immich_server:2283` address. nginx reaches it only through
-      the `127.0.0.1:18080` relay and public DNS resolution fails.
+      the `127.0.0.1:18080` relay and public DNS resolution fails. In the
+      NAS-controller profile a fifth accept, TCP/22 to `<WG_VPS_ADDRESS>`, is
+      certified only because the root-owned `/etc/immich-share/doctor.env`
+      names that address and `wg-tunnel` carries the identical
+      `WG_CONTROLLER_SSH_PEER`; the upload doctor rejects the variable outright.
+- [ ] `docker exec wg-tunnel ip6tables -S OUTPUT` prints exactly
+      `-P OUTPUT DROP` (or ip6tables reports that the kernel has no IPv6); the
+      OUTPUT allowlist is IPv4-only and both doctors refuse an IPv6 namespace
+      that is not fail-closed. Neither doctor depends on
+      `/proc/sys/net/ipv6`, which is absent on IPv6-less kernels.
+- [ ] `/var/log/immich-share/denied.log` exists and resolves into the deployed
+      `nas/logs` directory; the share doctor fails otherwise.
+- [ ] `tripwire follow` through the gate streams a fresh denied entry to the
+      Mac mini tripwire, while `tail`, `cat`, or any other command is refused.
 - [ ] `ping <WG_CONTROLLER_ADDRESS>` and `nc -vz <WG_CONTROLLER_ADDRESS> 22`
       fail because of the admin-host
       packet-filter rule.
 - [ ] After closing every share, `curl http://<WG_NAS_ADDRESS>:2283/` is refused because
       the NAS forward is stopped.
+- [ ] `sudo iptables -S FORWARD` contains `-i wg0 -o wg0 -j DROP`, and
+      `sudo iptables -S DOCKER-USER` lists the `immich-tunnel` and
+      `immich-uptun` ACCEPT/DROP rules tagged `--comment immich-share` in the
+      order shown in section 5, and nothing else from this project.
+- [ ] `systemctl is-enabled immich-share-containment` prints `enabled`, the unit
+      is `active (exited)`, and `/etc/wireguard/wg0.conf` contains no
+      `DOCKER-USER` line.
+- [ ] After `sudo systemctl restart wg-quick@wg0`, `sudo iptables -S DOCKER-USER`
+      is unchanged and the throwaway-container refusals below still hold.
+- [ ] From a throwaway container on `photo-share_tunnel_net`,
+      `<WG_CONTROLLER_ADDRESS>:22`, `<UPLOAD_NAS_WG_ADDRESS>:2383` and a public
+      address are all refused; only `<WG_NAS_ADDRESS>:2283` connects while a
+      share is active.
 
 For the optional upload peer, also verify from the VPS:
 
@@ -804,6 +1004,11 @@ For the optional upload peer, also verify from the VPS:
       public DNS plus external and LAN connection probes.
 - [ ] `upload-guard` has no published port or persistent writable mount and can
       reach only the dedicated upload filter address through WireGuard.
+- [ ] `photo-share_upload_net` contains only `caddy` and `upload-guard`;
+      `upload-guard` is absent from `photo-share_app_net` and
+      `photo-share_tunnel_net`, and a throwaway container on
+      `photo-share_upload_tunnel_net` is refused everywhere except
+      `<UPLOAD_NAS_WG_ADDRESS>:2383`.
 - [ ] The NAS upload filter allows only the documented GET/POST/HEAD/PATCH/DELETE
       contract; probes for `/healthz`, `/api`, `/admin`, traversal and unexpected
       methods return 404.
