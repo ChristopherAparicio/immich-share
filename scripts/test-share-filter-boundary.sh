@@ -18,6 +18,11 @@ bearer=ShareFilterBearer654
 api_key=ShareFilterApiKey321
 asset=01234567-89ab-cdef-0123-456789abcdef
 requests_log=$logs_dir/upstream-requests.log
+# Create the capture file on the host before the containers start: the echo
+# upstream runs as root inside its container, and a file it created would not
+# be truncatable by the (unprivileged) host user on Linux runners.
+: > "$requests_log"
+chmod 0666 "$requests_log"
 
 cleanup() {
     docker rm -f "$upstream_name" "$name" >/dev/null 2>&1 || true
