@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import signal
 import sys
 import uuid
@@ -35,6 +36,9 @@ DOCKER_ENV = {
     "LANG": "C.UTF-8",
 }
 ACTIONS = frozenset({"open", "list", "close", "sweep"})
+# A folder is exactly one path segment: no separators, no leading dot, no
+# leading/trailing whitespace. "." and ".." are additionally refused below.
+FOLDER_SEGMENT = re.compile(r"^[A-Za-z0-9][A-Za-z0-9 ._-]{0,119}$")
 
 
 class RequestError(ValueError):
@@ -78,8 +82,19 @@ def _text(payload: dict[str, object], name: str) -> str:
         raise RequestError(f"{name} is outside its allowed length")
     if len(value.encode("utf-8")) > MAX_LABEL_BYTES:
         raise RequestError(f"{name} is outside its allowed length")
-    if any(ord(char) < 0x20 or ord(char) == 0x7F for char in value):
-        raise RequestError(f"{name} contains control characters")
+    # str.isprintable() rejects every control, format, separator and
+    # unassigned code point (C0/C1 controls, U+202E RLO, U+2028 LS, U+200B ...),
+    # not only ASCII controls. Such characters can hide or reorder argv text.
+    if not value.isprintable():
+        raise RequestError(f"{name} contains non-printable characters")
+    return value
+
+
+def _folder(payload: dict[str, object], name: str) -> str:
+    value = _text(payload, name)
+    if value in {".", ".."} or "/" in value or "\\" in value \
+            or FOLDER_SEGMENT.fullmatch(value) is None:
+        raise RequestError(f"{name} must be a single safe path segment")
     return value
 
 
@@ -151,7 +166,7 @@ def request_to_argv(action: str, payload: dict[str, object]) -> list[str]:
         f"--quota={quota}b",
     ]
     if "folder" in payload:
-        argv.append(f'--folder={_text(payload, "folder")}')
+        argv.append(f'--folder={_folder(payload, "folder")}')
     return argv
 
 

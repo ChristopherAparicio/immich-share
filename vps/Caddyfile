@@ -9,6 +9,21 @@
 	# transfer completed over HTTP/1.1. HTTP/2 keeps TLS and multiplexing over TCP.
 	servers :443 {
 		protocols h1 h2
+		# Slowloris and header-flood defenses. `read_header` bounds the time a
+		# client may spend sending request headers and `max_header_size` caps
+		# their total size well above what browsers send. `read_body` is
+		# deliberately long: the upload edge streams 9-MB PATCH chunks from
+		# mobile links (about 5 minutes at 250 kbit/s), and the Go server applies
+		# this deadline to the whole request read, so a short value would abort
+		# legitimate slow uploads. Response streaming (ZIP transfers of up to 45
+		# minutes) is bounded upstream by nginx, not here; no `write` timeout.
+		# `idle` closes keep-alive connections with no active request or stream.
+		timeouts {
+			read_header 10s
+			read_body 5m
+			idle 2m
+		}
+		max_header_size 16KB
 	}
 
 	# Reverse-proxy failures are emitted by Caddy's runtime logger, separately
@@ -19,6 +34,16 @@
 		output stderr
 		format filter {
 			request>uri replace REDACTED
+			# The gallery's per-request CSRF token. Caddy canonicalises header
+			# names, so the fork's `x-ipp-csrf-token` is stored under this key.
+			request>headers>X-Ipp-Csrf-Token delete
+			# Bearer credentials. IPP's share/queue session cookies and the
+			# upload-drop session cookie replay an unlocked share or invitation
+			# for hours; the log is also pulled to the controller for telemetry.
+			request>headers>Cookie delete
+			request>headers>Authorization delete
+			request>headers>Proxy-Authorization delete
+			resp_headers>Set-Cookie delete
 		}
 	}
 }
@@ -141,6 +166,15 @@
 			# filters: Caddy stores one result per field and later filters can expose
 			# the original value again.
 			request>uri replace REDACTED
+			# Same CSRF token removal as the runtime logger above.
+			request>headers>X-Ipp-Csrf-Token delete
+			# Bearer credentials. IPP's share/queue session cookies and the
+			# upload-drop session cookie replay an unlocked share or invitation
+			# for hours; the log is also pulled to the controller for telemetry.
+			request>headers>Cookie delete
+			request>headers>Authorization delete
+			request>headers>Proxy-Authorization delete
+			resp_headers>Set-Cookie delete
 		}
 	}
 

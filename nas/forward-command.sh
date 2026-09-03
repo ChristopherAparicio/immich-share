@@ -4,7 +4,14 @@
 # account must use the narrow sudoers policy; never add it to the Docker group.
 set -eu
 
+# Fixed search path: this is the only program the gate key may run.
+PATH=/usr/sbin:/usr/bin:/sbin:/bin
+export PATH
+
 container=wg-nginx-filter
+# Fixed tripwire source. Point /var/log/immich-share at the deployed nas/logs
+# directory (symlink or bind mount); the path itself is never caller-supplied.
+denied_log=/var/log/immich-share/denied.log
 
 case "${SSH_ORIGINAL_COMMAND:-}" in
     "forward on")
@@ -42,6 +49,18 @@ case "${SSH_ORIGINAL_COMMAND:-}" in
         ;;
     "upload admin sweep")
         exec /usr/bin/sudo -n /usr/local/sbin/immich-share-upload-admin sweep
+        ;;
+    "tripwire follow")
+        # Streams only new sanitized refusal lines (method + normalized path);
+        # no history, no other file, no shell. Root is needed because logs/ is
+        # mode 0750 and owned by the nginx UID. `tail -F` would wait forever
+        # for a missing file, leaving the tripwire silently dead; refuse
+        # instead so the controller logs it and launchd retries.
+        /usr/bin/sudo -n /usr/bin/test -f "$denied_log" || {
+            printf 'tripwire source missing or unreadable: %s\n' "$denied_log" >&2
+            exit 65
+        }
+        exec /usr/bin/sudo -n /usr/bin/tail -F -n0 "$denied_log"
         ;;
     *)
         printf 'Denied command\n' >&2

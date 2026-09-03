@@ -1,6 +1,7 @@
 #!/bin/sh
 set -eu
 
+root_dir=$(CDPATH='' cd -- "$(dirname -- "$0")/.." && pwd)
 image=${UPLOAD_GUARD_TEST_IMAGE:-immich-share-nginx:1.31.4-hardened}
 name="upload-guard-body-test-$$"
 payload_dir=$(mktemp -d)
@@ -26,8 +27,8 @@ docker run -d --name "$name" -p 127.0.0.1::8081 \
     -e UPLOAD_REQUEST_RATE=30r/s \
     -e UPLOAD_PER_IP=2 \
     -e UPLOAD_GLOBAL=6 \
-    -v "$PWD/vps/upload-guard-nginx.conf:/etc/nginx/nginx.conf:ro" \
-    -v "$PWD/vps/upload-guard.conf.template:/etc/nginx/templates/default.conf.template:ro" \
+    -v "$root_dir/vps/upload-guard-nginx.conf:/etc/nginx/nginx.conf:ro" \
+    -v "$root_dir/vps/upload-guard.conf.template:/etc/nginx/templates/default.conf.template:ro" \
     "$image" >/dev/null
 
 port=$(docker port "$name" 8081/tcp | sed -n 's/.*://p' | tail -1)

@@ -4,6 +4,11 @@
 # filenames, or log contents.
 set -eu
 
+# This runs as root through sudo. Never resolve docker/iptables helpers through
+# a caller-influenced search path.
+PATH=/usr/sbin:/usr/bin:/sbin:/bin
+export PATH
+
 wg_container=wg-upload-tunnel
 filter_container=wg-upload-filter
 app_container=immich-upload-drop
@@ -15,6 +20,10 @@ fail() {
     exit 1
 }
 
+is_ipv4() {
+    printf '%s\n' "$1" | grep -Eq '^[0-9]{1,3}(\.[0-9]{1,3}){3}$'
+}
+
 certify_output_allowlist() {
     expected_upstream_ip=$1
     expected_upstream_port=$2
@@ -24,14 +33,23 @@ certify_output_allowlist() {
         }' /config/wg0.conf 2>/dev/null || true)
     endpoint_ip=${endpoint%:*}
     endpoint_port=${endpoint##*:}
-    printf '%s\n' "$endpoint_ip" | grep -Eq '^[0-9]{1,3}(\.[0-9]{1,3}){3}$' \
+    is_ipv4 "$endpoint_ip" \
         || fail "upload WireGuard endpoint allowlist cannot be certified"
     case "$endpoint_port" in
         ''|*[!0-9]*) fail "upload WireGuard endpoint allowlist cannot be certified" ;;
     esac
 
+    # The write-side tunnel never carries controller SSH. The NAS-controller
+    # opt-in belongs to wg-tunnel only; here the variable is a hard failure and
+    # exactly four steady-state accepts are allowed.
+    controller_ssh_peer=$(docker inspect --format \
+        '{{range .Config.Env}}{{println .}}{{end}}' "$wg_container" 2>/dev/null \
+        | sed -n 's/^WG_CONTROLLER_SSH_PEER=//p' | head -1)
+    [ -z "$controller_ssh_peer" ] || fail "upload tunnel must not carry WG_CONTROLLER_SSH_PEER"
+    expected_rule_count=4
+
     append_rules=$(printf '%s\n' "$output_policy" | grep '^-A OUTPUT ' || true)
-    [ "$(printf '%s\n' "$append_rules" | sed '/^$/d' | wc -l | tr -d ' ')" = 4 ] \
+    [ "$(printf '%s\n' "$append_rules" | sed '/^$/d' | wc -l | tr -d ' ')" = "$expected_rule_count" ] \
         || fail "upload namespace has an unexpected output allow rule"
     printf '%s\n' "$append_rules" | grep -Fx -- \
         '-A OUTPUT -d 127.0.0.1/32 -o lo -j ACCEPT' >/dev/null \
@@ -49,16 +67,37 @@ certify_output_allowlist() {
         || fail "upload namespace upstream rule is incorrect"
 }
 
+# The OUTPUT allowlist is IPv4 iptables only, so IPv6 must be fail-closed too:
+# ip6tables OUTPUT policy DROP with no accept other than (at most) loopback.
+# A kernel without IPv6 has no ip6tables table; that is equally closed. Never
+# consult /proc/sys/net/ipv6: it is absent on such kernels.
+certify_ipv6_closed() {
+    if ipv6_policy=$(docker exec "$wg_container" ip6tables -S OUTPUT 2>&1); then
+        ipv6_rules=$(printf '%s\n' "$ipv6_policy" \
+            | grep -Fvx -- '-A OUTPUT -o lo -j ACCEPT' | sed '/^$/d')
+        [ "$ipv6_rules" = '-P OUTPUT DROP' ] \
+            || fail "upload namespace IPv6 output policy is not fail-closed"
+    else
+        case "$ipv6_policy" in
+            *"can't initialize ip6tables table"*|*"Address family not supported"*|*"Protocol not supported"*) ;;
+            *) fail "upload namespace IPv6 output policy cannot be certified" ;;
+        esac
+    fi
+}
+
 [ -f "$admin_helper" ] && [ ! -L "$admin_helper" ] \
     || fail "upload administration helper is missing or unsafe"
 [ "$(stat -c '%u' "$admin_helper" 2>/dev/null || true)" = 0 ] \
     && [ "$(stat -c '%a' "$admin_helper" 2>/dev/null || true)" = 755 ] \
     || fail "upload administration helper owner or permissions are unsafe"
 
-[ "$(docker inspect --format '{{.State.Running}}' "$wg_container" 2>/dev/null || true)" = true ] \
+wg_state=$(docker inspect --format '{{.State.Running}}|{{.Id}}' "$wg_container" 2>/dev/null || true)
+wg_id=${wg_state#*|}
+[ "${wg_state%%|*}" = true ] && [ -n "$wg_id" ] \
     || fail "upload WireGuard is not running"
 [ "$(docker exec "$wg_container" sysctl -n net.ipv4.ip_forward 2>/dev/null || true)" = 0 ] \
     || fail "upload tunnel forwarding is enabled"
+certify_ipv6_closed
 output_policy=$(docker exec "$wg_container" iptables -S OUTPUT 2>/dev/null || true)
 printf '%s\n' "$output_policy" | grep -Fx -- '-P OUTPUT DROP' >/dev/null \
     || fail "upload namespace output policy is not fail-closed"
@@ -68,11 +107,14 @@ if docker exec "$wg_container" nc -z -w 2 1.1.1.1 443 >/dev/null 2>&1 \
     fail "upload namespace has unexpected LAN or Internet egress"
 fi
 
+# Security options are compared as the exact JSON list so an extra
+# seccomp=unconfined or apparmor=unconfined entry, or no-new-privileges:false,
+# cannot pass a substring match. Privileged mode is rejected outright.
 wg_hardening=$(docker inspect --format \
-    '{{.HostConfig.ReadonlyRootfs}}|{{json .HostConfig.CapDrop}}|{{json .HostConfig.CapAdd}}|{{json .HostConfig.SecurityOpt}}' \
+    '{{.HostConfig.Privileged}}|{{.HostConfig.ReadonlyRootfs}}|{{json .HostConfig.CapDrop}}|{{json .HostConfig.CapAdd}}|{{json .HostConfig.SecurityOpt}}' \
     "$wg_container" 2>/dev/null || true)
 case "$wg_hardening" in
-    true\|\[\"ALL\"\]\|\[\"NET_ADMIN\",\"DAC_READ_SEARCH\"\]\|*no-new-privileges*) ;;
+    false\|true\|\[\"ALL\"\]\|\[\"NET_ADMIN\",\"DAC_READ_SEARCH\"\]\|\[\"no-new-privileges:true\"\]) ;;
     *) fail "upload WireGuard hardening is incomplete" ;;
 esac
 
@@ -116,26 +158,23 @@ expected=$(printf '%s\n%s\n' "$app_container" "$wg_container" | sort)
 app_ip=$(docker inspect --format \
     "{{with index .NetworkSettings.Networks \"$drop_network\"}}{{.IPAddress}}{{end}}" \
     "$app_container" 2>/dev/null || true)
-printf '%s\n' "$app_ip" | grep -Eq '^[0-9]{1,3}(\.[0-9]{1,3}){3}$' \
+is_ipv4 "$app_ip" \
     || fail "allowlisted upload application address cannot be certified"
 certify_output_allowlist "$app_ip" 8080
-printf '%s\n' "$members" | grep -Eq '^(immich_server|immich_postgres|database|redis)$' \
-    && fail "Immich data services joined the upload network"
 egress_members=$(docker network inspect --format \
     '{{range .Containers}}{{println .Name}}{{end}}' "$egress_network" 2>/dev/null \
     | sed '/^$/d' | sort || true)
 [ "$egress_members" = "$wg_container" ] \
     || fail "upload egress network contains an unexpected service"
 
-wg_id=$(docker inspect --format '{{.Id}}' "$wg_container" 2>/dev/null || true)
 [ "$(docker inspect --format '{{.HostConfig.NetworkMode}}' "$filter_container" 2>/dev/null || true)" = "container:$wg_id" ] \
     || fail "upload filter is outside the upload tunnel namespace"
 
 filter_hardening=$(docker inspect --format \
-    '{{.Config.User}}|{{.HostConfig.ReadonlyRootfs}}|{{json .HostConfig.CapDrop}}|{{json .HostConfig.CapAdd}}|{{json .HostConfig.SecurityOpt}}' \
+    '{{.HostConfig.Privileged}}|{{.Config.User}}|{{.HostConfig.ReadonlyRootfs}}|{{json .HostConfig.CapDrop}}|{{json .HostConfig.CapAdd}}|{{json .HostConfig.SecurityOpt}}' \
     "$filter_container" 2>/dev/null || true)
 case "$filter_hardening" in
-    101:101\|true\|\[\"ALL\"\]\|null\|*no-new-privileges*|101:101\|true\|\[\"ALL\"\]\|\[\]\|*no-new-privileges*) ;;
+    false\|101:101\|true\|\[\"ALL\"\]\|null\|\[\"no-new-privileges:true\"\]|false\|101:101\|true\|\[\"ALL\"\]\|\[\]\|\[\"no-new-privileges:true\"\]) ;;
     *) fail "upload filter hardening is incomplete" ;;
 esac
 filter_ports=$(docker inspect --format '{{json .HostConfig.PortBindings}}' \
@@ -143,10 +182,10 @@ filter_ports=$(docker inspect --format '{{json .HostConfig.PortBindings}}' \
 case "$filter_ports" in ""|null|'{}') ;; *) fail "upload filter publishes a host port" ;; esac
 
 app_hardening=$(docker inspect --format \
-    '{{.State.Running}}|{{.Config.User}}|{{.HostConfig.ReadonlyRootfs}}|{{json .HostConfig.CapDrop}}|{{json .HostConfig.CapAdd}}|{{json .HostConfig.SecurityOpt}}' \
+    '{{.HostConfig.Privileged}}|{{.State.Running}}|{{.Config.User}}|{{.HostConfig.ReadonlyRootfs}}|{{json .HostConfig.CapDrop}}|{{json .HostConfig.CapAdd}}|{{json .HostConfig.SecurityOpt}}' \
     "$app_container" 2>/dev/null || true)
 case "$app_hardening" in
-    true\|65532:65532\|true\|\[\"ALL\"\]\|null\|*no-new-privileges*|true\|65532:65532\|true\|\[\"ALL\"\]\|\[\]\|*no-new-privileges*) ;;
+    false\|true\|65532:65532\|true\|\[\"ALL\"\]\|null\|\[\"no-new-privileges:true\"\]|false\|true\|65532:65532\|true\|\[\"ALL\"\]\|\[\]\|\[\"no-new-privileges:true\"\]) ;;
     *) fail "upload application hardening is incomplete" ;;
 esac
 app_ports=$(docker inspect --format '{{json .HostConfig.PortBindings}}' \
@@ -197,10 +236,10 @@ secret_owner=$(stat -c '%u' "$secret_source" 2>/dev/null || true)
     || fail "upload session secret owner or permissions are unsafe"
 
 rotation=$(docker inspect --format \
-    '{{.State.Running}}|{{.Config.User}}|{{.HostConfig.ReadonlyRootfs}}|{{.HostConfig.NetworkMode}}|{{json .HostConfig.CapDrop}}|{{json .HostConfig.CapAdd}}|{{json .HostConfig.SecurityOpt}}' \
+    '{{.HostConfig.Privileged}}|{{.State.Running}}|{{.Config.User}}|{{.HostConfig.ReadonlyRootfs}}|{{.HostConfig.NetworkMode}}|{{json .HostConfig.CapDrop}}|{{json .HostConfig.CapAdd}}|{{json .HostConfig.SecurityOpt}}' \
     "$logrotate_container" 2>/dev/null || true)
 case "$rotation" in
-    true\|101:101\|true\|none\|\[\"ALL\"\]\|null\|*no-new-privileges*|true\|101:101\|true\|none\|\[\"ALL\"\]\|\[\]\|*no-new-privileges*) ;;
+    false\|true\|101:101\|true\|none\|\[\"ALL\"\]\|null\|\[\"no-new-privileges:true\"\]|false\|true\|101:101\|true\|none\|\[\"ALL\"\]\|\[\]\|\[\"no-new-privileges:true\"\]) ;;
     *) fail "upload log rotation is not isolated" ;;
 esac
 
@@ -220,9 +259,9 @@ printf '%s\n' "$directives" | grep -F 'access_log /var/log/nginx/allowed.log dro
     || fail "normalized upload access log is not active"
 printf '%s\n' "$directives" | grep -F 'access_log /var/log/nginx/denied.log drop_route' >/dev/null \
     || fail "normalized upload refusal log is not active"
-# shellcheck disable=SC2016 # Match literal nginx variable names.
 drop_log_format=$(printf '%s\n' "$directives" \
     | sed -n '/^[[:space:]]*log_format[[:space:]]\+drop_route[[:space:]]/,/;/p')
+# shellcheck disable=SC2016 # Match literal nginx variable names.
 if printf '%s\n' "$drop_log_format" \
     | grep -E '\$(request_uri|request)([^A-Za-z_]|$)' >/dev/null; then
     fail "upload route logs contain the raw request target"

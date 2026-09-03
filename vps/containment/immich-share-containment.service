@@ -1,0 +1,30 @@
+# immich-share VPS bridge containment.
+# Install: /etc/systemd/system/immich-share-containment.service
+# Script:  /usr/local/sbin/immich-share-containment.sh (vps/containment/)
+#
+# Keeps the DOCKER-USER egress rules for the pinned `immich-tunnel` and
+# `immich-uptun` bridges independent of wg-quick, so restarting wg0 never
+# leaves IPP or upload-guard with open egress. Docker never flushes
+# DOCKER-USER; `ufw reload`/`ufw disable` do, so PartOf= re-applies the rules
+# whenever docker.service is restarted afterwards. There is no ExecStop: the
+# rules stay in place until `immich-share-containment.sh remove` is run.
+[Unit]
+Description=immich-share bridge containment (DOCKER-USER rules)
+Documentation=file:///usr/local/sbin/immich-share-containment.sh
+Wants=network-online.target
+After=network-online.target docker.service
+PartOf=docker.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+# Override the configuration source with a drop-in if the project directory
+# is not /srv/photo-share:
+#   Environment=CONTAINMENT_ENV_FILE=/path/to/.env
+ExecStart=/usr/local/sbin/immich-share-containment.sh apply
+ExecReload=/usr/local/sbin/immich-share-containment.sh apply
+ProtectHome=yes
+PrivateTmp=yes
+
+[Install]
+WantedBy=multi-user.target

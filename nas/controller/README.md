@@ -24,7 +24,42 @@ The NAS host does not have a route to `<WG_VPS_ADDRESS>` because WireGuard lives
 immich-share → ssh → ProxyCommand → docker exec wg-tunnel nc → <WG_VPS_ADDRESS>:22
 ```
 
-Run the read-only prerequisite check first:
+`wg-tunnel` runs with `OUTPUT DROP` and a four-rule allowlist (loopback,
+established replies, the literal WireGuard UDP endpoint and `immich_server`).
+The `nc` above opens a *new* TCP connection to `<WG_VPS_ADDRESS>:22`, which that
+allowlist drops. This profile therefore requires an explicit opt-in in the
+ignored `nas/.env`:
+
+```ini
+WG_CONTROLLER_SSH_PEER=<WG_VPS_ADDRESS>
+```
+
+The entrypoint validates the value as one literal IPv4 address and adds exactly
+one extra accept, `-d <WG_VPS_ADDRESS>/32 -p tcp --dport 22`, before Docker DNS
+is removed.
+
+`security-doctor.sh` does not trust the container it certifies for the expected
+peer. Record the expectation in a root-owned file the unprivileged gate cannot
+write, `/etc/immich-share/doctor.env` (mode 0600, one line):
+
+```bash
+sudo install -d -o root -g root -m 0755 /etc/immich-share
+sudo sh -c 'umask 077; printf "WG_CONTROLLER_SSH_PEER=%s\n" "<WG_VPS_ADDRESS>" \
+  > /etc/immich-share/doctor.env'
+```
+
+With that file present, the doctor requires `wg-tunnel` to carry exactly that
+value and certifies exactly five OUTPUT accepts including the matching TCP/22
+rule. With the file absent or empty (the separate-controller profile), it
+requires exactly four rules and fails if the container carries
+`WG_CONTROLLER_SSH_PEER` at all. `upload-security-doctor.sh` always fails when
+`wg-upload-tunnel` carries the variable: never set it there. Recreate
+`wg-tunnel` (and its filter) after changing the opt-in, then run `doctor`.
+
+Run the read-only prerequisite check first; it fails when the opt-in is absent,
+when it does not match `VPS_WG_ADDRESS`, or when `/etc/immich-share/doctor.env`
+is missing or names a different address (the file is root-only, so run the
+preflight with `sudo` or allow a non-interactive `sudo cat` of it):
 
 ```bash
 WG_CONTAINER=wg-tunnel \

@@ -40,6 +40,10 @@ services:
     networks:
       - public_net
       - app_net
+      # Reserved for the optional upload edge. Caddy is the only base service on
+      # `upload_net`, so a read-only deployment merely carries an empty private
+      # bridge; `docker-compose.upload.yml` attaches `upload-guard` to it.
+      - upload_net
 
   ipp:
     # Separate AGPL fork. Release deployments append the verified immutable
@@ -111,6 +115,7 @@ services:
       ZIP_RATE: ${ZIP_RATE:-2m}
       ZIP_RATE_AFTER: ${ZIP_RATE_AFTER:-1m}
       ZIP_GLOBAL: ${ZIP_GLOBAL:-3}
+      ZIP_PER_IP: ${ZIP_PER_IP:-1}
     volumes:
       - ./download-guard-nginx.conf:/etc/nginx/nginx.conf:ro
       - ./download-guard.conf.template:/etc/nginx/templates/default.conf.template:ro
@@ -141,6 +146,21 @@ services:
 
 networks:
   public_net:
+  # Gallery data plane: Caddy, IPP and the download guard. Internal only.
   app_net:
     internal: true
+  # Write-side boundary. Only Caddy and the optional `upload-guard` join it, so
+  # a compromised IPP or download-guard container has no route to the
+  # upload-guard listener or to the NAS upload filter behind it. Must be
+  # declared identically in docker-compose.upload.yml (same project, same
+  # network name).
+  upload_net:
+    internal: true
+  # NAT bridge from IPP to the host's wg0. The bridge interface name is pinned
+  # so the DOCKER-USER allowlist in vps/containment/immich-share-containment.sh
+  # can reference the interface instead of a subnet (the upload edge uses its
+  # own bridge, `immich-uptun`, in docker-compose.upload.yml). Keep the name in
+  # sync with the containment script and the CLI doctor probe.
   tunnel_net:
+    driver_opts:
+      com.docker.network.bridge.name: immich-tunnel

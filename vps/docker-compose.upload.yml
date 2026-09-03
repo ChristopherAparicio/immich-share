@@ -39,11 +39,25 @@ services:
       options:
         max-size: "10m"
         max-file: "3"
+    # The guard authorizes on the constant `X-Upload-Guard` marker overwritten
+    # by Caddy, so it must be reachable only by Caddy. It therefore shares no
+    # network with IPP or the download guard: `upload_net` is the private hop
+    # from Caddy, and `upload_tunnel_net` is a separate NAT bridge to the host's
+    # wg0 for the NAS upload filter. Neither `app_net` nor IPP's `tunnel_net`
+    # is joined, so a compromised gallery container has no route to the write
+    # path.
     networks:
-      - app_net
-      - tunnel_net
+      - upload_net
+      - upload_tunnel_net
 
 networks:
-  app_net:
+  # Same project directory as docker-compose.yml, so this resolves to the base
+  # network Caddy already joins. Keep the definition identical to the base file.
+  upload_net:
     internal: true
-  tunnel_net:
+  # Upload-only NAT bridge. The pinned interface name lets the DOCKER-USER
+  # allowlist in vps/containment/immich-share-containment.sh permit only the
+  # upload filter address and port from this bridge.
+  upload_tunnel_net:
+    driver_opts:
+      com.docker.network.bridge.name: immich-uptun

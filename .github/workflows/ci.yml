@@ -16,7 +16,12 @@ concurrency:
 jobs:
   validate:
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 25
+    defaults:
+      run:
+        # bash -e -o pipefail: a failing producer in a pipeline fails the step
+        # instead of validating an empty stream.
+        shell: bash
     env:
       NAS_WG_ADDRESS: 192.0.2.10
       UPLOAD_NAS_WG_ADDRESS: 192.0.2.11
@@ -45,14 +50,22 @@ jobs:
             macmini/photo-share-monitor.py \
             scripts/benchmark-downloads.py \
             nas/upload-admin-helper.py \
-            scripts/test-upload-admin-helper.py
+            scripts/test-upload-admin-helper.py \
+            scripts/test-photo-share-monitor.py
           python3 scripts/test-immich-share.py
+          python3 scripts/test-photo-share-monitor.py
           python3 scripts/test-upload-admin-helper.py
           python3 scripts/test-upload-deployment.py
           python3 scripts/check-public-tree.py
           sh -n nas/forward-command.sh nas/security-doctor.sh \
+            macmini/start-wireguard-fail-closed.sh \
             nas/upload-security-doctor.sh nas/wireguard-entrypoint.sh \
-            scripts/test-wireguard-egress-lockdown.sh
+            nas/controller/doctor-preflight.sh \
+            scripts/test-wireguard-egress-lockdown.sh \
+            scripts/test-upload-filter-boundary.sh \
+            scripts/test-share-filter-boundary.sh \
+            vps/containment/immich-share-containment.sh
+          bash -n macmini/denied-tripwire.sh
 
       - name: Validate Compose and build edge images
         run: |
@@ -60,8 +73,31 @@ jobs:
           sudo chown -R 1000:1000 vps/caddy-data vps/caddy-config
           docker compose -f vps/docker-compose.yml config --quiet
           docker compose -f vps/docker-compose.upload.yml config --quiet
+          # The upload guard must never share a network with IPP; Caddy is the
+          # only hop between the public edge and the write path.
+          docker compose -f vps/docker-compose.yml -f vps/docker-compose.upload.yml \
+            config --format json | python3 -c '
+          import json, sys
+          services = json.load(sys.stdin)["services"]
+          guard = set(services["upload-guard"]["networks"])
+          ipp = set(services["ipp"]["networks"])
+          assert guard == {"upload_net", "upload_tunnel_net"}, guard
+          assert not (guard & ipp), guard & ipp
+          assert "upload_net" in services["caddy"]["networks"]
+          print("upload-guard isolated from IPP:", sorted(guard))
+          '
           docker compose -f vps/docker-compose.yml build caddy download-guard
           docker compose -f vps/docker-compose.upload.yml build upload-guard
+
+      - name: Scan Caddy edge image
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          image-ref: vps-caddy
+          format: table
+          exit-code: 1
+          ignore-unfixed: false
+          vuln-type: os,library
+          severity: HIGH,CRITICAL
 
       - name: Validate Compose and build NAS images
         run: |
@@ -105,7 +141,7 @@ jobs:
         run: |
           docker compose -f vps/docker-compose.yml run --rm --no-deps \
             caddy caddy validate --config /etc/caddy/Caddyfile
-          docker run --rm --add-host ipp:127.0.0.1 \
+          docker run --rm \
             -e 'NGINX_ENVSUBST_FILTER=^(DOWNLOAD_|ZIP_|IPP_UPSTREAM$)' \
             -e IPP_UPSTREAM=ipp:3000 \
             -e DOWNLOAD_RATE=2m \
@@ -115,7 +151,8 @@ jobs:
             -e DOWNLOAD_LIMIT_DRY_RUN=off \
             -e ZIP_RATE=2m \
             -e ZIP_RATE_AFTER=1m \
-            -e ZIP_GLOBAL=1 \
+            -e ZIP_GLOBAL=3 \
+            -e ZIP_PER_IP=1 \
             -v "$PWD/vps/download-guard-nginx.conf:/etc/nginx/nginx.conf:ro" \
             -v "$PWD/vps/download-guard.conf.template:/etc/nginx/templates/default.conf.template:ro" \
             immich-share-nginx:1.31.4-hardened nginx -t
@@ -152,19 +189,59 @@ jobs:
           scripts/test-upload-guard-body-limits.sh
           scripts/test-upload-filter-boundary.sh
 
-      - name: Verify Caddy access-log redaction
+      - name: Verify NAS read-filter trust boundary
+        run: scripts/test-share-filter-boundary.sh
+
+      - name: Verify Caddy access-log redaction and route rendering
         run: |
           CADDY_TEST_IMAGE=vps-caddy scripts/test-caddy-log-redaction.sh
-          python3 scripts/render-caddy-test-config.py | docker run --rm --interactive \
-            --env PUBLIC_DOMAIN=localhost \
-            --tmpfs /data:uid=1000,gid=1000,mode=0700 \
-            --tmpfs /config:uid=1000,gid=1000,mode=0700 \
-            vps-caddy caddy validate --config - --adapter caddyfile
+          # A busy portal (the one-share case is booted for real by the
+          # redaction test above): the generated matchers must stay valid and
+          # anchored at scale (see AGENTS.md). `adapt --validate` runs the same
+          # provisioning pass as `caddy validate` and still emits the JSON.
+          python3 scripts/render-caddy-test-config.py --shares 12 \
+            | docker run --rm --interactive --env PUBLIC_DOMAIN=localhost \
+                --tmpfs /data:uid=1000,gid=1000,mode=0700 \
+                --tmpfs /config:uid=1000,gid=1000,mode=0700 \
+                vps-caddy caddy adapt --validate --config - --adapter caddyfile 2>/dev/null \
+            | python3 -c '
+          import json, sys
+          config = json.load(sys.stdin)
+          server = next(iter(config["apps"]["http"]["servers"].values()))
+          site = next(r for r in server["routes"] if any("host" in m for m in r.get("match", [])))
+          patterns = [
+              m["path_regexp"]["pattern"]
+              for route in site["handle"][0]["routes"]
+              for m in route.get("match", [])
+              if "path_regexp" in m
+          ]
+          assert len(patterns) >= 12 * 11, len(patterns)
+          bad = [p for p in patterns if not (p.startswith("(?i)^") and p.endswith("$"))]
+          assert not bad, bad
+          print("share matchers:", len(patterns), "all anchored and case-insensitive")
+          '
+
+      - name: Pull pinned IPP image
+        id: ipp
+        run: |
+          ipp_image=$(docker compose -f vps/docker-compose.yml config --images | grep '^ghcr.io/.*immich-public-proxy')
+          test -n "$ipp_image"
+          docker pull "$ipp_image"
+          echo "image=$ipp_image" >> "$GITHUB_OUTPUT"
+
+      - name: Scan pinned IPP image
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          image-ref: ${{ steps.ipp.outputs.image }}
+          format: table
+          exit-code: 1
+          ignore-unfixed: false
+          vuln-type: os,library
+          severity: HIGH,CRITICAL
 
       - name: Run immutable IPP ZIP E2E
         run: |
-          ipp_image=$(docker compose -f vps/docker-compose.yml config --images | grep '^ghcr.io/.*immich-public-proxy')
-          docker pull "$ipp_image"
+          ipp_image='${{ steps.ipp.outputs.image }}'
           docker run --rm --init --user 1000:1000 \
             -e IMMICH_URL=http://127.0.0.1:3101 \
             -e PUBLIC_BASE_URL=http://127.0.0.1:3102 \

@@ -5,10 +5,14 @@ FROM caddy:2.11.4-builder@sha256:4bdeabce8e79d36b23d1cba7d20598cec2c1117ace960d8
 # Go module proxy and checksum database. This affects build transport only;
 # force the Go client to HTTP/1.1 for a reproducible xcaddy fetch.
 ENV GODEBUG=http2client=0
+# The --replace pins lift transitive Go modules past the versions Trivy flags
+# (HIGH/CRITICAL gate in CI); bump them when the scan turns red.
 RUN xcaddy build \
     --with github.com/mholt/caddy-ratelimit@v0.1.0 \
-    --replace google.golang.org/grpc=google.golang.org/grpc@v1.82.1 \
-    --replace golang.org/x/net=golang.org/x/net@v0.56.0
+    --replace google.golang.org/grpc=google.golang.org/grpc@v1.83.1 \
+    --replace golang.org/x/net=golang.org/x/net@v0.56.0 \
+    --replace golang.org/x/crypto=golang.org/x/crypto@v0.55.0 \
+    --replace golang.org/x/text=golang.org/x/text@v0.39.0
 
 FROM caddy:2.11.4-alpine@sha256:5f5c8640aae01df9654968d946d8f1a56c497f1dd5c5cda4cf95ab7c14d58648
 # curl is unused. Removing it reduces the installed attack surface.

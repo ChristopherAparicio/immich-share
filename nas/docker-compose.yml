@@ -22,11 +22,21 @@ services:
     sysctls:
       # Critical: no forwarding, so the VPS cannot pivot into the home LAN.
       - net.ipv4.ip_forward=0
+      # Do not add net.ipv6.conf.*.disable_ipv6 here: on a kernel with IPv6
+      # compiled out or disabled the sysctl path is absent and runc refuses to
+      # start the container. The entrypoint fails IPv6 closed with an
+      # ip6tables OUTPUT/FORWARD DROP policy instead (or logs that IPv6 is
+      # unavailable), and the doctor certifies that policy.
     environment:
       WG_OUTPUT_LOCKDOWN: "true"
       WG_INTERNAL_UPSTREAM_HOST: immich_server
       WG_INTERNAL_UPSTREAM_PORT: "2283"
       WG_LOCAL_PROXY_PORT: "18080"
+      # Optional NAS-controller profile only. When set to the VPS WireGuard
+      # address, the entrypoint adds exactly one extra OUTPUT accept (TCP/22 to
+      # that /32) so `ProxyCommand docker exec -i wg-tunnel nc` can reach VPS
+      # SSH. Leave empty in the separate-controller profile.
+      WG_CONTROLLER_SSH_PEER: ${WG_CONTROLLER_SSH_PEER:-}
     volumes:
       - ./wg0-nas.conf:/config/wg0.conf:ro
     read_only: true

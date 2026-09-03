@@ -13,6 +13,8 @@ map $http_x_download_guard $download_guard_authorized {
 limit_conn_zone $download_client_key zone=download_per_ip:1m;
 limit_conn_zone $server_name zone=download_global:1m;
 limit_conn_zone $server_name zone=zip_global:1m;
+# One client must not be able to hold every ZIP slot with slow readers.
+limit_conn_zone $download_client_key zone=zip_per_ip:1m;
 
 # Do not log URLs here because they contain share keys. These metrics remain
 # useful without copying that credential into another log.
@@ -33,6 +35,15 @@ server {
     client_header_timeout 10s;
     client_body_timeout 10s;
     send_timeout 10m;
+
+    # Resolve the IPP service name through Docker's embedded DNS on every
+    # TTL expiry instead of once at startup, so recreating `ipp` does not break
+    # downloads until this guard restarts. Because proxy_pass takes a variable
+    # and carries no URI part, nginx forwards the original request target
+    # unchanged. Startup and `nginx -t` no longer need the name to resolve.
+    resolver 127.0.0.11 valid=30s ipv6=off;
+    resolver_timeout 5s;
+    set $ipp_upstream http://${IPP_UPSTREAM};
 
     limit_conn_dry_run ${DOWNLOAD_LIMIT_DRY_RUN};
     limit_conn_log_level notice;
@@ -87,7 +98,7 @@ server {
         limit_rate_after ${DOWNLOAD_RATE_AFTER};
         limit_rate ${DOWNLOAD_RATE};
 
-        proxy_pass http://${IPP_UPSTREAM};
+        proxy_pass $ipp_upstream;
         proxy_http_version 1.1;
         # `limit_rate` needs the buffered path. Buffers stay small and
         # `proxy_max_temp_file_size 0` prevents media staging in nginx.
@@ -122,6 +133,7 @@ server {
         }
 
         client_max_body_size 64k;
+        limit_conn zip_per_ip ${ZIP_PER_IP};
         limit_conn zip_global ${ZIP_GLOBAL};
         limit_rate_after ${ZIP_RATE_AFTER};
         limit_rate ${ZIP_RATE};
@@ -129,7 +141,7 @@ server {
         error_page 413 =413 /zip-too-large.html;
         error_page 507 =507 /zip-unavailable.html;
 
-        proxy_pass http://${IPP_UPSTREAM};
+        proxy_pass $ipp_upstream;
         proxy_http_version 1.1;
         proxy_intercept_errors on;
         proxy_ignore_headers X-Accel-Buffering;
@@ -163,6 +175,7 @@ server {
             deny all;
         }
 
+        limit_conn zip_per_ip ${ZIP_PER_IP};
         limit_conn zip_global ${ZIP_GLOBAL};
         limit_rate_after ${ZIP_RATE_AFTER};
         limit_rate ${ZIP_RATE};
@@ -170,7 +183,7 @@ server {
         error_page 413 =413 /zip-too-large.html;
         error_page 507 =507 /zip-unavailable.html;
 
-        proxy_pass http://${IPP_UPSTREAM};
+        proxy_pass $ipp_upstream;
         proxy_http_version 1.1;
         proxy_intercept_errors on;
         proxy_ignore_headers X-Accel-Buffering;

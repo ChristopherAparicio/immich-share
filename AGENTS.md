@@ -34,6 +34,32 @@ forced-command helper taking only a full invitation UUID; never broaden the
 existing upload administration bridge into filesystem, shell, Docker or
 arbitrary CLI access.
 
+Generated per-share Caddy routes (every route that carries a share key) must
+stay anchored, case-insensitive (`(?i)^…$`) `path_regexp` matchers that are
+mutually exclusive within a share. Never reintroduce a prefix or wildcard
+`path` matcher on a share-key route: Caddy's `path` matcher is
+case-insensitive while `path_regexp` is not, and `handle` blocks with
+non-trivial matchers are kept in source order only, so an overlapping matcher
+can route an `original` past the download guard. The two key-less global
+routes (`/share/static/*`, `/share/unlock`) and the `rate_limit` zone matchers
+in `vps/Caddyfile` are exempt: they carry no key and cannot select an asset.
+`RouteMatcherTests` in `scripts/test-immich-share.py` checks the per-share
+snippet; keep its route probes current when adding a route.
+
+The NAS read filter (`nas/nginx-filter.conf`) enforces share-key semantics,
+not merely a route list: it forwards the normalized `$uri` (never the raw
+request target) and, of all credential carriers, only the
+`immich_shared_link_token` cookie that IPP obtains from
+`POST /api/shared-links/login`. Keep `Cookie` reduced to that token and
+`Authorization`, `x-api-key` and the `x-immich-*-token` headers stripped; the
+allowlisted routes also serve fully authenticated Immich users. Every map
+pattern in both NAS filters ends in `\z`, not `$`. Caddy's two log filters
+must keep deleting `Cookie`, `Authorization` and `Set-Cookie` alongside the URI.
+The VPS containment unit must keep the `-o wg0` DROP so no bridge other than
+the two tunnel bridges can reach the tunnel. The Mac mini WireGuard daemon
+runs as root and must execute only root-owned tool copies, never binaries or
+configs under the operator-owned Homebrew prefix.
+
 ## Installation workflow
 
 1. Run read-only discovery first and reuse values already present in the local
