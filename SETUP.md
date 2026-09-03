@@ -514,8 +514,8 @@ In the ignored `nas/.env`, set both directory paths, the session-secret file
 path, public HTTPS origin without `/drop`, private upload WireGuard address,
 policy ceilings, and `UPLOAD_DROP_IMAGE`. The image value is deliberately
 required and must include an immutable `@sha256:` digest. The reviewed
-release is `ghcr.io/christopheraparicio/immich-drop:v0.2.0` at digest
-`sha256:aacb9da84f534c01e8ad40e15ec754c2dded7586cf27a12f68379a70320aa916`;
+release is `ghcr.io/christopheraparicio/immich-drop:v0.2.1` at digest
+`sha256:4711e71c0775aa8d157046fc486a3dc759a1ae38642f16ce59671099e86e3ed1`;
 verify the release provenance before copying a newer digest.
 
 Validate without opening a public route:
