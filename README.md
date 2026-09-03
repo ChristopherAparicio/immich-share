@@ -136,8 +136,9 @@ Most tutorials wave security away. This one has a real model — read [`SETUP.md
 - **The provider *can* technically read RAM and a short-lived ZIP cache during a share window.** We don't pretend otherwise. The window is narrow and the cache is deleted automatically. True zero-knowledge requires a different design (e.g. [Ente](https://ente.io)) with export friction.
 - **A compromised VPS is contained by topology, not by the VPS itself:** filtering nginx (fail-closed) on the trusted side, no route to the LAN, `pf` blocking the admin machine, and a `denied.log` tripwire that pings you on the first probe (it follows the log through the exact `tripwire follow` forced command, so the admin machine holds no NAS shell). On the VPS itself, a compromised IPP container shares no Docker network with the upload guard and its bridge may forward only to the two NAS filter ports (`DOCKER-USER` rules installed by the `vps/containment/` systemd unit, independent of the tunnel's lifecycle and verified by `doctor`); the VPS never relays between WireGuard peers.
 - **Caveat on "stateless":** the proxy writes no photos, but Caddy keeps a
-  short-lived access log on the VPS. The complete request URI is redacted before
-  that log is written; per-album telemetry uses a truncated one-way SHA-256
+  short-lived access log on the VPS. The complete request URI, the `Cookie` and
+  `Authorization` request headers and `Set-Cookie` are redacted before that log
+  is written; per-album telemetry uses a truncated one-way SHA-256
   reference plus a coarse action rather than the share key. The share key still
   crosses the VPS and WireGuard to IPP/Immich as part of a live request, so a
   compromised VPS can read it in transit; a key alone remains insufficient

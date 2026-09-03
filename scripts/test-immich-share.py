@@ -511,6 +511,82 @@ def parse_snippet_matchers(rendered):
         matchers[name] = (methods, pattern)
     return matchers
 
+    def test_nas_filter_forwards_only_the_share_token_cookie(self):
+        config = (ROOT / "nas" / "nginx-filter.conf").read_text()
+        upload = (ROOT / "nas" / "upload-filter.conf").read_text()
+        # The gate evaluates the normalized $uri; the same path must be proxied.
+        self.assertIn("proxy_pass http://${IMMICH_UPSTREAM}$uri$is_args$args;", config)
+        self.assertIn("proxy_set_header Cookie $immich_share_cookie;", config)
+        self.assertRegex(config, r'"~\(\?:\^\|;\\s\*\)immich_shared_link_token=')
+        for header in (
+            "Authorization",
+            "Proxy-Authorization",
+            "x-api-key",
+            "x-immich-user-token",
+            "x-immich-session-token",
+        ):
+            self.assertIn(f'proxy_set_header {header} "";', config, header)
+        # `$` matches before a trailing newline that nginx decodes from %0A.
+        for text, name in ((config, "nginx-filter.conf"), (upload, "upload-filter.conf")):
+            patterns = [
+                line for line in text.splitlines() if line.lstrip().startswith(("~^", '"~^'))
+            ]
+            self.assertTrue(patterns, name)
+            for line in patterns:
+                self.assertNotRegex(line, r"\$\"? [^ ]+;$", f"{name}: {line}")
+                self.assertRegex(line, r"\\z\"? [^ ]+;$", f"{name}: {line}")
+
+    def test_caddy_logs_drop_credential_headers(self):
+        caddy = (ROOT / "vps" / "Caddyfile").read_text()
+        # Both the runtime logger and the access log carry the same filter.
+        for field in (
+            "request>uri replace REDACTED",
+            "request>headers>X-Ipp-Csrf-Token delete",
+            "request>headers>Cookie delete",
+            "request>headers>Authorization delete",
+            "request>headers>Proxy-Authorization delete",
+            "resp_headers>Set-Cookie delete",
+        ):
+            self.assertEqual(caddy.count(field), 2, field)
+
+    def test_download_guard_limits_zip_transfers_per_client(self):
+        template = (ROOT / "vps" / "download-guard.conf.template").read_text()
+        compose = (ROOT / "vps" / "docker-compose.yml").read_text()
+        env = (ROOT / "vps" / ".env.example").read_text()
+        self.assertIn("limit_conn_zone $download_client_key zone=zip_per_ip:1m;", template)
+        self.assertEqual(template.count("limit_conn zip_global ${ZIP_GLOBAL};"), 2)
+        self.assertEqual(template.count("limit_conn zip_per_ip ${ZIP_PER_IP};"), 2)
+        self.assertIn("ZIP_PER_IP: ${ZIP_PER_IP:-1}", compose)
+        self.assertRegex(env, r"(?m)^ZIP_PER_IP=1$")
+
+    def test_vps_containment_drops_every_other_bridge_toward_wg0(self):
+        script = (ROOT / "vps" / "containment" / "immich-share-containment.sh").read_text()
+        setup = (ROOT / "SETUP.md").read_text()
+        self.assertIn("insert_rule -o wg0 -j DROP\n", script)
+        # The unconditional wg0 DROP sits after the ACCEPTs and before the bridge DROPs.
+        self.assertLess(
+            script.index("insert_rule -o wg0 -j DROP"),
+            script.index('insert_rule -i "$read_bridge" -j DROP'),
+        )
+        rule = "-A DOCKER-USER -o wg0 -m comment --comment immich-share -j DROP"
+        self.assertIn(rule, script)
+        self.assertIn(rule, setup)
+
+    def test_macmini_wireguard_daemon_runs_only_root_owned_tools(self):
+        plist = (ROOT / "macmini" / "local.immich-share-wireguard.plist").read_text()
+        script = (ROOT / "macmini" / "start-wireguard-fail-closed.sh").read_text()
+        self.assertNotIn("/opt/homebrew", plist)
+        self.assertNotIn("/opt/homebrew", script)
+        self.assertIn(
+            "<string>/usr/local/libexec/immich-share-wireguard:/usr/bin:/bin:/usr/sbin:/sbin</string>",
+            plist,
+        )
+        self.assertIn("PATH=$tool_dir:/usr/bin:/bin:/usr/sbin:/sbin", script)
+        for tool in ("wg-quick", "bash", "wg", "wireguard-go"):
+            self.assertIn(tool, script)
+        self.assertIn('require_root_owned "$wg_config" "WireGuard config"', script)
+        self.assertIn('require_root_owned "$(dirname "$wg_config")"', script)
+
 
 class RouteMatcherTests(unittest.TestCase):
     """The guard must not depend on Caddy's handle ordering or case folding."""
@@ -674,6 +750,48 @@ class HardeningTests(unittest.TestCase):
         real.chmod(0o600)
         self.assertEqual(self._state("real.json")._read()["shares"], {})
 
+    def test_immich_client_never_follows_redirects_with_the_api_key(self):
+        import http.server
+        import threading
+
+        leaked = []
+
+        class Handler(http.server.BaseHTTPRequestHandler):
+            def log_message(self, *_args):
+                pass
+
+            def do_GET(self):
+                if self.path.startswith("/api/"):
+                    self.send_response(302)
+                    self.send_header(
+                        "Location", f"http://127.0.0.1:{self.server.server_port}/leak"
+                    )
+                    self.end_headers()
+                    return
+                leaked.append(self.headers.get("x-api-key"))
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.end_headers()
+                self.wfile.write(b"[]")
+
+        server = http.server.HTTPServer(("127.0.0.1", 0), Handler)
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        try:
+            immich = module.Immich.__new__(module.Immich)
+            immich.url = f"http://127.0.0.1:{server.server_port}"
+            immich.api_key = "secret-api-key"
+            with redirect_stderr(io.StringIO()) as err:
+                with self.assertRaises(SystemExit):
+                    immich._call("GET", "/albums")
+            self.assertIn("redirect", err.getvalue())
+            with self.assertRaises(RuntimeError) as ctx:
+                immich.probe()
+            self.assertIn("redirect", str(ctx.exception))
+        finally:
+            server.shutdown()
+            server.server_close()
+        self.assertEqual(leaked, [])
+
     def test_find_album_accepts_an_album_uuid(self):
         immich = module.Immich.__new__(module.Immich)
         albums = [
@@ -702,6 +820,7 @@ class HardeningTests(unittest.TestCase):
             (
                 "-A DOCKER-USER -d 192.0.2.10/32 -i immich-tunnel -o wg0 -p tcp -m tcp --dport 2283 -m comment --comment immich-share -j ACCEPT",
                 "-A DOCKER-USER -d 192.0.2.11/32 -i immich-uptun -o wg0 -p tcp -m tcp --dport 2383 -m comment --comment immich-share -j ACCEPT",
+                "-A DOCKER-USER -o wg0 -m comment --comment immich-share -j DROP",
                 "-A DOCKER-USER -i immich-tunnel -m comment --comment immich-share -j DROP",
                 "-A DOCKER-USER -i immich-uptun -m comment --comment immich-share -j DROP",
                 "-A DOCKER-USER -j RETURN",
@@ -724,6 +843,9 @@ class HardeningTests(unittest.TestCase):
             rules.replace("--dport 2283", "--dport 22"),
             rules.replace("-d 192.0.2.10/32 ", ""),
             rules.replace("-i immich-uptun -m comment", "-i immich-uptun -s 0.0.0.0/0 -m comment"),
+            # Without the bridge-to-wg0 DROP, Caddy's public bridge reaches the tunnel.
+            rules.replace("-A DOCKER-USER -o wg0 -m comment --comment immich-share -j DROP\n", ""),
+            rules.replace("-A DOCKER-USER -o wg0 -m comment", "-A DOCKER-USER -i immich-tunnel -o wg0 -m comment"),
         ):
             edge._ssh = lambda *_a, bad=bad, **_k: SimpleNamespace(
                 returncode=0, stdout=bad, stderr=""

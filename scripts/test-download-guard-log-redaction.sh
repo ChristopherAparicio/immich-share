@@ -32,6 +32,7 @@ docker run -d --name "$name" --network "$network" --network-alias ipp \
     -e ZIP_RATE=2m \
     -e ZIP_RATE_AFTER=1m \
     -e ZIP_GLOBAL=3 \
+    -e ZIP_PER_IP=1 \
     -v "$root_dir/vps/download-guard-nginx.conf:/etc/nginx/nginx.conf:ro" \
     -v "$root_dir/vps/download-guard.conf.template:/etc/nginx/templates/default.conf.template:ro" \
     -v "$root_dir/vps/zip-busy.html:/usr/share/nginx/html/zip-busy.html:ro" \

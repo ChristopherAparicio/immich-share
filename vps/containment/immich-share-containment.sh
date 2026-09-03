@@ -15,16 +15,20 @@
 #
 #   -A DOCKER-USER -d <WG_NAS_ADDRESS>/32 -i immich-tunnel -o wg0 -p tcp -m tcp --dport 2283 -m comment --comment immich-share -j ACCEPT
 #   -A DOCKER-USER -d <UPLOAD_NAS_WG_ADDRESS>/32 -i immich-uptun -o wg0 -p tcp -m tcp --dport 2383 -m comment --comment immich-share -j ACCEPT
+#   -A DOCKER-USER -o wg0 -m comment --comment immich-share -j DROP
 #   -A DOCKER-USER -i immich-tunnel -m comment --comment immich-share -j DROP
 #   -A DOCKER-USER -i immich-uptun -m comment --comment immich-share -j DROP
 #
-# The two DROP rules are unconditional; the `immich-uptun` ACCEPT is added only
-# when the upload edge is enabled (see CONTAINMENT_UPLOAD below). Rules naming
-# an interface are accepted before the bridge exists, so the order of Docker,
-# Compose and this unit does not matter. Replies flow wg0 -> bridge through
-# Docker's conntrack ESTABLISHED rule. Caddy sits on other bridges and keeps
-# its ACME egress. The wg0 -> wg0 relay DROP stays in wg0.conf because it
-# belongs to the tunnel, not to Docker.
+# The three DROP rules are unconditional; the `immich-uptun` ACCEPT is added
+# only when the upload edge is enabled (see CONTAINMENT_UPLOAD below). The
+# `-o wg0` DROP closes every other bridge toward the tunnel: Caddy, the only
+# Internet-facing parser, sits on `public_net` and must not be able to reach
+# the NAS filters on arbitrary ports or the admin peer if it is compromised.
+# It keeps its ACME egress because that leaves through the default route, not
+# wg0. Rules naming an interface are accepted before the bridge exists, so the
+# order of Docker, Compose and this unit does not matter. Replies flow
+# wg0 -> bridge through Docker's conntrack ESTABLISHED rule. The wg0 -> wg0
+# relay DROP stays in wg0.conf because it belongs to the tunnel, not to Docker.
 #
 # The script owns exactly the rules it tags with `-m comment --comment
 # immich-share` plus any legacy rule that names one of the two pinned bridges
@@ -204,6 +208,7 @@ apply() {
     if [ "$upload_enabled" -eq 1 ]; then
         insert_rule -i "$upload_bridge" -o wg0 -d "$UPLOAD_NAS_WG_ADDRESS/32" -p tcp --dport "$upload_port" -j ACCEPT
     fi
+    insert_rule -o wg0 -j DROP
     insert_rule -i "$read_bridge" -j DROP
     insert_rule -i "$upload_bridge" -j DROP
     remove_stage_rules

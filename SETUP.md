@@ -392,8 +392,10 @@ peers. Two independent pieces close this:
   filter they exist for: `immich-tunnel` (IPP) to `<WG_NAS_ADDRESS>:2283` and
   `immich-uptun` (`upload-guard`) to `<UPLOAD_NAS_WG_ADDRESS>:2383`.
   Everything else forwarded from those bridges is dropped, including
-  cross-container traffic on the same bridge. Caddy uses other bridges and
-  keeps its ACME egress. The rules are deliberately not installed from
+  cross-container traffic on the same bridge, and no other bridge may forward
+  to `wg0` at all: a compromised Caddy keeps its ACME egress through the
+  default route but cannot reach the NAS filters or the admin peer through the
+  tunnel. The rules are deliberately not installed from
   `wg0.conf`: `systemctl restart wg-quick@wg0` would remove them in PostDown
   and leave both containers with open egress until the tunnel came back.
 
@@ -444,6 +446,7 @@ sudo iptables -S DOCKER-USER
 # Expected, in this order (the upload ACCEPT only when uploads are configured):
 #   -A DOCKER-USER -d <WG_NAS_ADDRESS>/32 -i immich-tunnel -o wg0 -p tcp -m tcp --dport 2283 -m comment --comment immich-share -j ACCEPT
 #   -A DOCKER-USER -d <UPLOAD_NAS_WG_ADDRESS>/32 -i immich-uptun -o wg0 -p tcp -m tcp --dport 2383 -m comment --comment immich-share -j ACCEPT
+#   -A DOCKER-USER -o wg0 -m comment --comment immich-share -j DROP
 #   -A DOCKER-USER -i immich-tunnel -m comment --comment immich-share -j DROP
 #   -A DOCKER-USER -i immich-uptun -m comment --comment immich-share -j DROP
 sudo systemctl restart wg-quick@wg0 && sudo iptables -S DOCKER-USER | grep -c -- '--comment immich-share'   # unchanged
@@ -703,6 +706,8 @@ Small-VPS defaults in `vps/.env.example`:
 - `DOWNLOAD_GLOBAL=6`: six active individual downloads globally.
 - `DOWNLOAD_LIMIT_DRY_RUN=off`: excess requests receive HTTP 429.
 - `ZIP_GLOBAL=3`: hard nginx backstop allowing three prepared ZIP transfers.
+- `ZIP_PER_IP=1`: ZIP transfers a single client address may hold at once, so a
+  slow reader cannot occupy every `ZIP_GLOBAL` slot.
 - `ZIP_RATE=2m`: 2 MiB/s per ZIP after the first MiB.
 - `ZIP_MAX_PARALLEL_DOWNLOADS=3`: matching IPP ready/transfer slot ceiling.
 - `ZIP_DISK_BUDGET_PERCENT=50`: staged files plus the STORE archive may use at
@@ -977,8 +982,9 @@ From the VPS:
       the NAS forward is stopped.
 - [ ] `sudo iptables -S FORWARD` contains `-i wg0 -o wg0 -j DROP`, and
       `sudo iptables -S DOCKER-USER` lists the `immich-tunnel` and
-      `immich-uptun` ACCEPT/DROP rules tagged `--comment immich-share` in the
-      order shown in section 5, and nothing else from this project.
+      `immich-uptun` ACCEPT rules, the `-o wg0` DROP and the two bridge DROPs
+      tagged `--comment immich-share` in the order shown in section 5, and
+      nothing else from this project.
 - [ ] `systemctl is-enabled immich-share-containment` prints `enabled`, the unit
       is `active (exited)`, and `/etc/wireguard/wg0.conf` contains no
       `DOCKER-USER` line.

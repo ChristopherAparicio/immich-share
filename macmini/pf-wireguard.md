@@ -37,7 +37,31 @@ replies from the VPS to outbound SSH or ping traffic would hit `block in`.
 Do not start WireGuard and pf from independent LaunchDaemons: scheduler order is
 not guaranteed, so the tunnel can briefly exist before the inbound block.
 
-Install the repository's fail-closed starter and its single LaunchDaemon:
+The starter runs as root, so it executes only root-owned copies of the
+WireGuard tools. Homebrew's prefix is owned by the operator account: a root
+daemon that ran `wg-quick` from there would let any compromise of that account
+(for example through the photo-share-monitor process) become root at the next
+boot. Copy the four executables `wg-quick` needs into a root-owned directory
+and keep the tunnel config outside the Homebrew prefix:
+
+```bash
+sudo install -d -o root -g wheel -m 0755 /usr/local/libexec/immich-share-wireguard
+for tool in wg-quick wg wireguard-go bash; do
+  sudo install -o root -g wheel -m 0755 "$(readlink -f "$(brew --prefix)/bin/$tool")" \
+    /usr/local/libexec/immich-share-wireguard/
+done
+# The copies must not load libraries from the operator-writable prefix.
+# This must print nothing.
+otool -L /usr/local/libexec/immich-share-wireguard/bash \
+  /usr/local/libexec/immich-share-wireguard/wg \
+  /usr/local/libexec/immich-share-wireguard/wireguard-go | grep /opt/homebrew || true
+sudo install -d -o root -g wheel -m 0700 /etc/wireguard
+sudo install -o root -g wheel -m 0600 <FILLED_IN_WG0_CONF> /etc/wireguard/wg0.conf
+```
+
+Repeat the copy step after every `brew upgrade` of `wireguard-tools`,
+`wireguard-go` or `bash`; the copies do not follow Homebrew. Then install the
+fail-closed starter and its single LaunchDaemon:
 
 ```bash
 sudo install -o root -g wheel -m 0755 macmini/start-wireguard-fail-closed.sh \
@@ -49,10 +73,14 @@ sudo launchctl bootstrap system /Library/LaunchDaemons/local.immich-share-wiregu
 ```
 
 Remove or disable any previous independent WireGuard/pf LaunchDaemons and the
-WireGuard GUI auto-connect setting first. The starter validates and enables pf,
-verifies the effective anchor, and only then calls `wg-quick up`. If any filter
-check fails, it leaves the tunnel down. The default private config path is
-`/opt/homebrew/etc/wireguard/wg0.conf`; it must be root-owned mode 0600.
+WireGuard GUI auto-connect setting first. The starter refuses to start unless
+the tool directory, each of the four tools, `/etc/wireguard` and `wg0.conf` are
+root-owned, free of symlinks and writable by neither group nor others, and it
+never searches the Homebrew prefix. It then validates and enables pf, verifies
+the effective anchor, and only then calls `wg-quick up`. If any check fails, it
+leaves the tunnel down. The config path defaults to `/etc/wireguard/wg0.conf`
+(mode 0600); override it with `WG_CONFIG`, and the tool directory with
+`TOOL_DIR`, in the plist if needed.
 
 ## Validation
 

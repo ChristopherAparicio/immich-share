@@ -9,6 +9,8 @@ drop_token=redaction-test-upload-token-1234567890
 query_secret=redaction-test-query-secret
 csrf_token=redaction-test-csrf-token-abcdef0123456789
 visible_header=redaction-test-visible-header
+cookie_canary=redaction-test-cookie-canary-0123456789
+auth_canary=redaction-test-auth-canary-0123456789
 temporary_directory=$(mktemp -d)
 rendered_config=$temporary_directory/Caddyfile
 
@@ -46,6 +48,8 @@ while :; do
 		--max-time 2 \
 		--header "X-IPP-CSRF-Token: $csrf_token" \
 		--header "X-Redaction-Probe: $visible_header" \
+		--cookie "ipp-session=$cookie_canary" \
+		--header "Authorization: Bearer $auth_canary" \
 		"https://localhost:$host_port/share/$share_key?token=$query_secret&key=$share_key"; then
 		break
 	fi
@@ -60,6 +64,8 @@ curl --silent --show-error --insecure --output /dev/null \
 	--max-time 2 \
 	--header "X-IPP-CSRF-Token: $csrf_token" \
 	--header "X-Redaction-Probe: $visible_header" \
+	--cookie "ipp-session=$cookie_canary" \
+	--header "Authorization: Bearer $auth_canary" \
 	"https://localhost:$host_port/drop/i/$drop_token?token=$query_secret"
 
 sleep 1
@@ -85,6 +91,17 @@ fi
 if docker exec "$container_name" grep -Fq "$csrf_token" /data/access.log \
 	|| printf '%s\n' "$runtime_logs" | grep -Fq "$csrf_token"; then
 	echo "Caddy log contains the CSRF-token canary" >&2
+	exit 1
+fi
+# Session cookies and bearer tokens are credentials too; both loggers drop them.
+if docker exec "$container_name" grep -Fq "$cookie_canary" /data/access.log \
+	|| printf '%s\n' "$runtime_logs" | grep -Fq "$cookie_canary"; then
+	echo "Caddy log contains the Cookie canary" >&2
+	exit 1
+fi
+if docker exec "$container_name" grep -Fq "$auth_canary" /data/access.log \
+	|| printf '%s\n' "$runtime_logs" | grep -Fq "$auth_canary"; then
+	echo "Caddy log contains the Authorization canary" >&2
 	exit 1
 fi
 docker exec "$container_name" grep -Fq "$visible_header" /data/access.log

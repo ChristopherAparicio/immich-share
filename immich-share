@@ -199,6 +199,24 @@ def load_config(explicit_path: str | None = None) -> configparser.ConfigParser:
     )
 
 
+class _RefuseRedirects(urllib.request.HTTPRedirectHandler):
+    """Never follow a redirect.
+
+    The default handler re-sends every request header (including the Immich
+    API key) and, for 307/308, the body (the share password) to whatever host
+    and scheme the Location header names, so an HTTPS -> HTTP hop or a hostile
+    reverse proxy in front of Immich would exfiltrate the key. A redirect is a
+    configuration error and surfaces as an HTTPError 3xx instead.
+    """
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        return None
+
+
+# Shared opener for every HTTP call made by this tool.
+HTTP_OPENER = urllib.request.build_opener(_RefuseRedirects)
+
+
 class Immich:
     def __init__(self, cfg):
         self.url = cfg["immich"]["url"].rstrip("/")
@@ -239,10 +257,16 @@ class Immich:
             data=json.dumps(body).encode() if body is not None else None,
         )
         try:
-            with urllib.request.urlopen(req, timeout=15) as r:
+            with HTTP_OPENER.open(req, timeout=15) as r:
                 data = r.read()
                 return json.loads(data) if data else None
         except urllib.error.HTTPError as e:
+            if 300 <= e.code < 400:
+                die(
+                    f"Immich {method} {path} answered with a redirect (HTTP {e.code}); "
+                    "refusing to follow it with the API key — point [immich] url at "
+                    "the final address"
+                )
             die(
                 f"Immich {method} {path} → HTTP {e.code} : {e.read().decode(errors='replace')[:300]}"
             )
@@ -307,9 +331,11 @@ class Immich:
             headers={"x-api-key": self.api_key, "Accept": "application/json"},
         )
         try:
-            with urllib.request.urlopen(req, timeout=10) as response:
+            with HTTP_OPENER.open(req, timeout=10) as response:
                 albums = json.load(response)
         except urllib.error.HTTPError as exc:
+            if 300 <= exc.code < 400:
+                raise RuntimeError(f"HTTP {exc.code} redirect refused") from exc
             raise RuntimeError(f"HTTP {exc.code}") from exc
         except (urllib.error.URLError, ValueError) as exc:
             raise RuntimeError(str(exc)) from exc
@@ -612,7 +638,7 @@ class Edge:
             url, headers={"User-Agent": marker}
         )
         try:
-            with urllib.request.urlopen(request, timeout=10) as response:
+            with HTTP_OPENER.open(request, timeout=10) as response:
                 raise RuntimeError(f"forbidden route returned HTTP {response.status}")
         except urllib.error.HTTPError as exc:
             if exc.code != 404:
@@ -679,6 +705,9 @@ class Edge:
 
         The rules live in DOCKER-USER independently of wg0 (see
         vps/containment/), so a tunnel restart cannot silently reopen egress.
+        Expected order: the read ACCEPT, the optional upload ACCEPT, a DROP for
+        every other bridge toward wg0 (Caddy's public bridge included), then the
+        unconditional DROPs for the two tunnel bridges.
         """
         r = self._ssh(
             "rules=$(sudo -n iptables -S DOCKER-USER 2>/dev/null "
@@ -708,8 +737,11 @@ class Edge:
                 index = tokens.index("--comment")
                 if index + 1 < len(tokens) and tokens[index + 1] == "immich-share":
                     project_lines.append(line)
-        if len(project_lines) not in {3, 4}:
-            raise RuntimeError("unexpected number of immich-share containment rules")
+        if len(project_lines) not in {4, 5}:
+            raise RuntimeError(
+                "unexpected number of immich-share containment rules "
+                "(redeploy vps/containment/immich-share-containment.sh)"
+            )
         if append_lines[: len(project_lines)] != project_lines:
             raise RuntimeError("immich-share containment rules are not first in DOCKER-USER")
 
@@ -757,24 +789,25 @@ class Edge:
             ):
                 raise RuntimeError("containment ACCEPT rule is not narrowly scoped")
 
-        def validate_drop(line: str, bridge: str) -> None:
+        def validate_drop(line: str, option: str, interface: str) -> None:
             values, modules = parse_rule(line)
             if (
                 values
-                != {"-i": bridge, "--comment": "immich-share", "-j": "DROP"}
+                != {option: interface, "--comment": "immich-share", "-j": "DROP"}
                 or modules != {"comment"}
             ):
                 raise RuntimeError("containment DROP rule is not exact")
 
         validate_accept(project_lines[0], "immich-tunnel", "2283")
-        if len(project_lines) == 4:
+        if len(project_lines) == 5:
             validate_accept(project_lines[1], "immich-uptun", "2383")
             drop_lines = project_lines[2:]
         else:
             drop_lines = project_lines[1:]
-        validate_drop(drop_lines[0], "immich-tunnel")
-        validate_drop(drop_lines[1], "immich-uptun")
-        return "bridge egress limited to the NAS filter ports"
+        validate_drop(drop_lines[0], "-o", "wg0")
+        validate_drop(drop_lines[1], "-i", "immich-tunnel")
+        validate_drop(drop_lines[2], "-i", "immich-uptun")
+        return "bridge egress limited to the NAS filter ports; no other bridge reaches wg0"
 
     def probe_controller_blocked(self, address: str) -> str:
         try:
@@ -990,7 +1023,7 @@ def probe_public_root(public_base: str) -> str:
         headers={"User-Agent": "immich-share-doctor/1"},
     )
     try:
-        with urllib.request.urlopen(request, timeout=10) as response:
+        with HTTP_OPENER.open(request, timeout=10) as response:
             raise RuntimeError(f"unexpected HTTP {response.status}; expected 404")
     except urllib.error.HTTPError as exc:
         if exc.code != 404:

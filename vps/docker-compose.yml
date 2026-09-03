@@ -115,6 +115,7 @@ services:
       ZIP_RATE: ${ZIP_RATE:-2m}
       ZIP_RATE_AFTER: ${ZIP_RATE_AFTER:-1m}
       ZIP_GLOBAL: ${ZIP_GLOBAL:-3}
+      ZIP_PER_IP: ${ZIP_PER_IP:-1}
     volumes:
       - ./download-guard-nginx.conf:/etc/nginx/nginx.conf:ro
       - ./download-guard.conf.template:/etc/nginx/templates/default.conf.template:ro

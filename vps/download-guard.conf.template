@@ -13,6 +13,8 @@ map $http_x_download_guard $download_guard_authorized {
 limit_conn_zone $download_client_key zone=download_per_ip:1m;
 limit_conn_zone $server_name zone=download_global:1m;
 limit_conn_zone $server_name zone=zip_global:1m;
+# One client must not be able to hold every ZIP slot with slow readers.
+limit_conn_zone $download_client_key zone=zip_per_ip:1m;
 
 # Do not log URLs here because they contain share keys. These metrics remain
 # useful without copying that credential into another log.
@@ -131,6 +133,7 @@ server {
         }
 
         client_max_body_size 64k;
+        limit_conn zip_per_ip ${ZIP_PER_IP};
         limit_conn zip_global ${ZIP_GLOBAL};
         limit_rate_after ${ZIP_RATE_AFTER};
         limit_rate ${ZIP_RATE};
@@ -172,6 +175,7 @@ server {
             deny all;
         }
 
+        limit_conn zip_per_ip ${ZIP_PER_IP};
         limit_conn zip_global ${ZIP_GLOBAL};
         limit_rate_after ${ZIP_RATE_AFTER};
         limit_rate ${ZIP_RATE};

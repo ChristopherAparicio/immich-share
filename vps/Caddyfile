@@ -37,6 +37,13 @@
 			# The gallery's per-request CSRF token. Caddy canonicalises header
 			# names, so the fork's `x-ipp-csrf-token` is stored under this key.
 			request>headers>X-Ipp-Csrf-Token delete
+			# Bearer credentials. IPP's share/queue session cookies and the
+			# upload-drop session cookie replay an unlocked share or invitation
+			# for hours; the log is also pulled to the controller for telemetry.
+			request>headers>Cookie delete
+			request>headers>Authorization delete
+			request>headers>Proxy-Authorization delete
+			resp_headers>Set-Cookie delete
 		}
 	}
 }
@@ -161,6 +168,13 @@
 			request>uri replace REDACTED
 			# Same CSRF token removal as the runtime logger above.
 			request>headers>X-Ipp-Csrf-Token delete
+			# Bearer credentials. IPP's share/queue session cookies and the
+			# upload-drop session cookie replay an unlocked share or invitation
+			# for hours; the log is also pulled to the controller for telemetry.
+			request>headers>Cookie delete
+			request>headers>Authorization delete
+			request>headers>Proxy-Authorization delete
+			resp_headers>Set-Cookie delete
 		}
 	}
 
