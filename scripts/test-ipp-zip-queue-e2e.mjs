@@ -149,11 +149,32 @@ try {
     throw new Error(`invalid part boundaries: ${JSON.stringify(planned.plan.parts)}`)
   }
 
+  // Since 3.2.1-immich-share.7 a plan is share-scoped: it only carries the
+  // album's part boundaries, which every unlocked visitor could compute, so it
+  // is shared instead of re-probing Immich per cookie. Jobs stay visitor-bound:
+  // another visitor may reuse the opaque plan but can neither read nor cancel
+  // a job it does not own.
   const unrelatedSession = await openSession()
-  const stolenPlan = await prepare(unrelatedSession, { planId: planned.plan.id, part: 1 }).catch(error => error)
-  if (!(stolenPlan instanceof Error) || !String(stolenPlan.message).includes('404')) {
-    throw new Error('another visitor could use an opaque ZIP plan')
-  }
+  const borrowed = await prepare(unrelatedSession, { planId: planned.plan.id, part: 1 })
+  if (!borrowed.cookie) throw new Error('second visitor did not receive a queue-session cookie')
+  const peek = await fetch(`http://127.0.0.1:${ippPort}/share/${shareKey}/download/jobs/${borrowed.job.id}`, {
+    headers: { ...tlsProxyHeaders, Cookie: planned.cookie }
+  })
+  if (peek.status !== 404) throw new Error(`another visitor could read a job it does not own: status=${peek.status}`)
+  const foreignCancel = await fetch(`http://127.0.0.1:${ippPort}/share/${shareKey}/download/jobs/${borrowed.job.id}`, {
+    method: 'DELETE',
+    headers: { ...tlsProxyHeaders, Cookie: planned.cookie, 'X-IPP-CSRF-Token': csrfFrom(planned.cookie) }
+  })
+  // The proxy refuses the foreign cancel (404 or 409); what matters is that the
+  // owner's job is untouched afterwards.
+  if (foreignCancel.status < 400) throw new Error(`another visitor could cancel a job it does not own: status=${foreignCancel.status}`)
+  const stillOwned = await status(borrowed.job, borrowed.cookie)
+  if (stillOwned.state === 'cancelled') throw new Error('a foreign DELETE cancelled the owner\'s job')
+  const ownCancel = await fetch(`http://127.0.0.1:${ippPort}/share/${shareKey}/download/jobs/${borrowed.job.id}`, {
+    method: 'DELETE',
+    headers: { ...tlsProxyHeaders, Cookie: borrowed.cookie, 'X-IPP-CSRF-Token': csrfFrom(borrowed.cookie) }
+  })
+  if (ownCancel.status < 200 || ownCancel.status >= 300) throw new Error(`owner could not cancel its job: status=${ownCancel.status}`)
 
   const first = await prepare(planned.cookie, { planId: planned.plan.id, part: 1 })
   if (!first.cookie) throw new Error('first visitor did not receive a queue-session cookie')
