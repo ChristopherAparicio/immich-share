@@ -484,9 +484,16 @@ class DeploymentBoundaryTests(unittest.TestCase):
         script = (ROOT / "macmini" / "start-wireguard-fail-closed.sh").read_text()
         self.assertLess(script.index('"$pfctl_bin" -f'), script.index('"$wg_quick_bin" up'))
         self.assertIn("anchor has no inbound block rule", script)
+        self.assertIn("bundled library directory", script)
+        plist = (ROOT / "macmini" / "local.immich-share-wireguard.plist").read_text()
+        # wg-quick backgrounds wireguard-go; without this key launchd reaps it
+        # when the one-shot starter returns and the tunnel silently disappears.
+        self.assertIn("AbandonProcessGroup", plist)
         guide = (ROOT / "macmini" / "pf-wireguard.md").read_text()
         self.assertIn("single LaunchDaemon", guide)
         self.assertNotIn("after a short boot delay", guide)
+        self.assertIn("@loader_path/lib/", guide)
+        self.assertIn("codesign -f -s -", guide)
 
 
 MATCHER_BLOCK_RE = re.compile(r"^@(\w+) \{\n((?:\t.*\n)+?)\}$", re.MULTILINE)

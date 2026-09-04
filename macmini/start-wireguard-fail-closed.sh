@@ -61,6 +61,19 @@ for tool in wg-quick bash wg wireguard-go; do
         || fail "$tool resolves to '$resolved' instead of $tool_dir/$tool"
 done
 
+# wg-quick needs bash 4+, which macOS does not ship, and Homebrew's bash loads
+# readline, history, ncurses and gettext from the operator-writable prefix.
+# pf-wireguard.md therefore vendors those libraries next to the root-owned bash
+# and rewrites its load paths to @loader_path/lib. Root must own that directory
+# and every library in it, otherwise the escalation returns through a dylib.
+if [ -d "$tool_dir/lib" ]; then
+    require_root_owned "$tool_dir/lib" "bundled library directory"
+    for lib in "$tool_dir"/lib/*.dylib; do
+        [ -e "$lib" ] || continue
+        require_root_owned "$lib" "bundled library ${lib##*/}"
+    done
+fi
+
 require_root_owned "$(dirname "$wg_config")" "WireGuard config directory"
 require_root_owned "$wg_config" "WireGuard config"
 [ -f "$wg_config" ] || fail "WireGuard config is not a regular file: $wg_config"

@@ -42,28 +42,47 @@ WireGuard tools. Homebrew's prefix is owned by the operator account: a root
 daemon that ran `wg-quick` from there would let any compromise of that account
 (for example through the photo-share-monitor process) become root at the next
 boot. Copy the four executables `wg-quick` needs into a root-owned directory
-and keep the tunnel config outside the Homebrew prefix:
+and keep the tunnel config outside the Homebrew prefix.
+
+`wg-quick`, `wg` and `wireguard-go` link only against system libraries, so a
+plain copy is enough. `bash` is the exception: `wg-quick` requires bash 4+,
+macOS ships 3.2, and Homebrew's bash loads `readline`, `history`, `ncurses` and
+`gettext` from the operator-writable prefix. Copying only its binary would
+leave the escalation intact through those libraries, so vendor them next to it
+and rewrite the load paths. `install_name_tool` invalidates the signature, and
+Apple Silicon refuses unsigned binaries, hence the ad-hoc `codesign`:
 
 ```bash
-sudo install -d -o root -g wheel -m 0755 /usr/local/libexec/immich-share-wireguard
+tool_dir=/usr/local/libexec/immich-share-wireguard
+sudo install -d -o root -g wheel -m 0755 "$tool_dir" "$tool_dir/lib"
 for tool in wg-quick wg wireguard-go bash; do
-  sudo install -o root -g wheel -m 0755 "$(readlink -f "$(brew --prefix)/bin/$tool")" \
-    /usr/local/libexec/immich-share-wireguard/
+  sudo install -o root -g wheel -m 0755 "$(readlink -f "/opt/homebrew/bin/$tool")" "$tool_dir/"
 done
-# The copies must not load libraries from the operator-writable prefix.
+for ref in $(otool -L "$tool_dir/bash" | awk 'NR>1 && $1 ~ /^\/opt\/homebrew/ {print $1}'); do
+  sudo install -o root -g wheel -m 0755 "$(readlink -f "$ref")" "$tool_dir/lib/${ref##*/}"
+  sudo install_name_tool -change "$ref" "@loader_path/lib/${ref##*/}" "$tool_dir/bash"
+done
+for lib in "$tool_dir"/lib/*.dylib; do
+  sudo install_name_tool -id "@loader_path/${lib##*/}" "$lib"
+done
+sudo codesign -f -s - "$tool_dir/bash" "$tool_dir"/lib/*.dylib
+# Nothing may still resolve through the operator-writable prefix.
 # This must print nothing.
-otool -L /usr/local/libexec/immich-share-wireguard/bash \
-  /usr/local/libexec/immich-share-wireguard/wg \
-  /usr/local/libexec/immich-share-wireguard/wireguard-go | grep /opt/homebrew || true
+otool -L "$tool_dir/bash" "$tool_dir/wg" "$tool_dir/wireguard-go" \
+  "$tool_dir"/lib/*.dylib | grep /opt/homebrew || true
 sudo install -d -o root -g wheel -m 0700 /etc/wireguard
 sudo install -o root -g wheel -m 0600 <FILLED_IN_WG0_CONF> /etc/wireguard/wg0.conf
 ```
 
 Repeat the copy step after every `brew upgrade` of `wireguard-tools`,
-`wireguard-go` or `bash`; the copies do not follow Homebrew. Then install the
-fail-closed starter and its single LaunchDaemon:
+`wireguard-go`, `bash`, `readline`, `ncurses` or `gettext`; the copies do not
+follow Homebrew. The starter refuses to start when `lib/` or any library in it
+is not root-owned. Then install the fail-closed starter and its
+single LaunchDaemon; note that `/usr/local/sbin` does not exist by default on
+Apple Silicon:
 
 ```bash
+sudo install -d -o root -g wheel -m 0755 /usr/local/sbin
 sudo install -o root -g wheel -m 0755 macmini/start-wireguard-fail-closed.sh \
   /usr/local/sbin/immich-share-wireguard-start
 sudo install -o root -g wheel -m 0644 macmini/local.immich-share-wireguard.plist \
@@ -72,8 +91,14 @@ sudo plutil -lint /Library/LaunchDaemons/local.immich-share-wireguard.plist
 sudo launchctl bootstrap system /Library/LaunchDaemons/local.immich-share-wireguard.plist
 ```
 
-Remove or disable any previous independent WireGuard/pf LaunchDaemons and the
-WireGuard GUI auto-connect setting first. The starter refuses to start unless
+The daemon declares `AbandonProcessGroup`. Without it launchd reaps every
+remaining process in the job's group as soon as the one-shot starter returns,
+which kills the `wireguard-go` instance and the route monitor that `wg-quick`
+backgrounds: the daemon then reports success while the tunnel interface no
+longer exists. Remove or disable any previous independent WireGuard/pf
+LaunchDaemons and the WireGuard GUI auto-connect setting first.
+
+The starter refuses to start unless
 the tool directory, each of the four tools, `/etc/wireguard` and `wg0.conf` are
 root-owned, free of symlinks and writable by neither group nor others, and it
 never searches the Homebrew prefix. It then validates and enables pf, verifies

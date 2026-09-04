@@ -22,6 +22,12 @@
     </dict>
     <key>RunAtLoad</key>
     <true/>
+    <!-- wg-quick backgrounds wireguard-go and a route monitor, then exits. Without
+         this key launchd reaps every remaining process in the job's group as soon
+         as the one-shot starter returns, which silently removes the tunnel
+         interface: the daemon reports success while wg0 no longer exists. -->
+    <key>AbandonProcessGroup</key>
+    <true/>
     <key>ThrottleInterval</key>
     <integer>30</integer>
     <key>StandardOutPath</key>
