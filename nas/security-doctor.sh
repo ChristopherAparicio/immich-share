@@ -144,6 +144,11 @@ if docker exec "$wg_container" nc -z -w 2 1.1.1.1 443 >/dev/null 2>&1 \
     || docker exec "$wg_container" nc -z -w 2 "$lan_probe" 443 >/dev/null 2>&1; then
     fail "tunnel namespace has unexpected LAN or Internet egress"
 fi
+# The relay probe and every effective-configuration check below run inside the
+# filter, so state the real cause first: with no share open the filter is
+# deliberately stopped and none of them can run.
+[ "$(docker inspect --format '{{.State.Running}}' "$filter_container" 2>/dev/null || true)" = true ] \
+    || fail "filter is stopped; run doctor during a controlled test share"
 docker exec "$filter_container" nc -z -w 3 127.0.0.1 18080 >/dev/null 2>&1 \
     || fail "allowlisted Immich loopback relay is unreachable from the filter"
 
@@ -197,10 +202,8 @@ case "$rotation" in
 esac
 
 # A complete doctor is intentionally run while a controlled test share keeps
-# the filter online. This lets us test the effective generated config and logs,
-# not merely a source template that Docker may not be using.
-[ "$(docker inspect --format '{{.State.Running}}' "$filter_container" 2>/dev/null || true)" = true ] \
-    || fail "filter is stopped; run doctor during a controlled test share"
+# the filter online (asserted above). This lets us test the effective generated
+# config and logs, not merely a source template that Docker may not be using.
 effective=$(docker exec "$filter_container" nginx -T 2>/dev/null) \
     || fail "effective nginx configuration cannot be read"
 # nginx -T includes source comments. Inspect directives only so a defensive

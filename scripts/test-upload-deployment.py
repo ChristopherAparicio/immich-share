@@ -259,4 +259,12 @@ for readonly_mount in ("/config/wg0.conf", "/run/secrets/session-secret"):
     )
     require(nas_doctor, template, "NAS upload doctor read-only mount inspection")
 
+# Everything after the relay probe runs inside the filter, which is stopped
+# whenever no share is open. Both doctors must say so instead of reporting an
+# unreachable relay.
+if share_doctor.index("filter is stopped") > share_doctor.index("loopback relay is unreachable"):
+    raise AssertionError("share doctor probes the relay before checking the filter is running")
+if nas_doctor.index("upload filter is stopped") > nas_doctor.index("127.0.0.1 18080"):
+    raise AssertionError("upload doctor probes the relay before checking the filter is running")
+
 print("Upload deployment boundary checks passed.")
