@@ -1,0 +1,10 @@
+# Trivy exceptions for the Caddy edge image only (passed via `trivyignores` on
+# the "Scan Caddy edge image" CI step; other images keep the full gate).
+#
+# CVE-2026-116587 — go-jose/v3 3.0.5, DoS via crafted RSA parameters in JWKs.
+# No fixed release exists. Caddy pulls it through caddypki (smallstep), which
+# this deployment never configures: no acme_server, tls internal or
+# local_certs. The ACME client that obtains public certificates does not use
+# go-jose. Remove this entry as soon as a fixed go-jose/v3 or a Caddy release
+# without it is available; the expiry forces a review either way.
+CVE-2026-116587 exp:2027-02-08
