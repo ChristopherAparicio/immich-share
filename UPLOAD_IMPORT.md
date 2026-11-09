@@ -92,8 +92,11 @@ mode-0600 environment file; never place the key in argv, shell history,
 Immich Drop, the VPS, or this repository.
 
 The key should have only the permissions required by the pinned CLI version to
-upload assets and create/add to albums. Pin the CLI image by immutable digest
-and use a local or encrypted private Immich endpoint. A typical Linux NAS
+upload assets and create/add to albums. Pin the CLI image by immutable digest,
+keep its major version equal to the server's (a 3.x CLI for an Immich 3
+server), and use a local or encrypted private Immich endpoint. On Immich 3,
+`--album-name` may also match a same-named album another user shared with the
+key's account: use a unique album name and check the target in the UI first. A typical Linux NAS
 invocation is:
 
 ```bash

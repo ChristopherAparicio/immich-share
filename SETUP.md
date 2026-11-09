@@ -820,6 +820,13 @@ album shared by another Immich user does not guarantee permission to publish
 it, so confirm the operation with a non-sensitive test album owned or managed
 by the designated account.
 
+The CLI and the monitor only list albums owned by that account
+(`GET /albums?isOwned=true`): Immich 3 otherwise also returns albums other
+users shared with it. Immich 2.x and 3.x are both supported with the same key
+permissions. Before moving a server to Immich 3, migrate its database from
+pgvecto.rs to VectorChord while still on 2.x, and pin `IMMICH_VERSION` to an
+explicit major (`v2`/`v3`), never the floating `release` tag.
+
 The current controller supports one Immich account per deployment. Keep one API
 key and one `managed_state_file` authoritative for the shared VPS
 `shares_dir`. Do not run separate account configurations against that directory:

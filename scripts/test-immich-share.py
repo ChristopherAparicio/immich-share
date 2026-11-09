@@ -815,6 +815,21 @@ class HardeningTests(unittest.TestCase):
             with self.assertRaises(SystemExit):
                 immich.find_album("99999999-2222-4333-8444-555555555555")
 
+    def test_album_lookups_request_owned_albums_only(self):
+        # Immich 3 lists albums shared *with* the user on a bare GET /albums;
+        # publishing one of those would expose another user's album.
+        immich = module.Immich.__new__(module.Immich)
+        paths = []
+        immich._call = lambda method, path, body=None: paths.append(path) or [
+            {"id": "0f9c6d1e-2b3a-4c5d-8e7f-a1b2c3d4e5f6", "albumName": "Summer"}
+        ]
+        immich.find_album("Summer")
+        self.assertEqual(paths, ["/albums?isOwned=true"])
+        monitor = (ROOT / "macmini" / "photo-share-monitor.py").read_text()
+        self.assertIn("S.immich.owned_albums()", monitor)
+        self.assertNotIn('_call("GET", "/albums")', monitor)
+        self.assertIn('f"{self.url}/api{self.OWNED_ALBUMS}"', (ROOT / "immich-share").read_text())
+
     def test_forward_containment_probe_maps_exit_codes_to_reasons(self):
         edge = module.Edge.__new__(module.Edge)
         for code, fragment in ((41, "DOCKER-USER"), (42, "immich-tunnel")):

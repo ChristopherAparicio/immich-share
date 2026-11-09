@@ -273,8 +273,15 @@ class Immich:
         except urllib.error.URLError as e:
             die(f"Immich is unreachable ({self.url}): {e.reason}")
 
+    # Immich 3 returns albums shared *with* the key's user on a bare GET /albums;
+    # only owned albums may be published. Immich 2.x accepts the same filter.
+    OWNED_ALBUMS = "/albums?isOwned=true"
+
+    def owned_albums(self) -> list:
+        return self._call("GET", self.OWNED_ALBUMS) or []
+
     def find_album(self, name: str) -> dict:
-        albums = self._call("GET", "/albums")
+        albums = self.owned_albums()
         if UUID_RE.fullmatch(name):
             by_id = [a for a in albums if str(a.get("id", "")).lower() == name.lower()]
             if not by_id:
@@ -327,7 +334,7 @@ class Immich:
     def probe(self) -> str:
         """Validate scoped API access without exposing album or asset details."""
         req = urllib.request.Request(
-            f"{self.url}/api/albums",
+            f"{self.url}/api{self.OWNED_ALBUMS}",
             headers={"x-api-key": self.api_key, "Accept": "application/json"},
         )
         try:
