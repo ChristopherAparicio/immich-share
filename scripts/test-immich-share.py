@@ -805,10 +805,13 @@ class HardeningTests(unittest.TestCase):
             {"id": "0f9c6d1e-2b3a-4c5d-8e7f-a1b2c3d4e5f6", "albumName": "Summer"},
             {"id": "11111111-2222-4333-8444-555555555555", "albumName": "Summer"},
         ]
-        immich._call = lambda method, path, body=None: albums
+        paths = []
+        immich._call = lambda method, path, body=None: paths.append(path) or albums
         self.assertEqual(
             immich.find_album("0F9C6D1E-2B3A-4C5D-8E7F-A1B2C3D4E5F6")["albumName"], "Summer"
         )
+        # Immich 3 also lists shared-with-me albums unless asked for owned ones.
+        self.assertEqual(paths, ["/albums?isOwned=true"])
         with redirect_stderr(io.StringIO()):
             with self.assertRaises(SystemExit):
                 immich.find_album("Summer")  # ambiguous by name

@@ -366,9 +366,7 @@ def _immich_shares():
 
 
 def _albums():
-    # The CLI client exposes no album listing; its authenticated call helper is
-    # reused so URL, key handling and error policy stay in one place.
-    albums = S.immich._call("GET", "/albums") or []
+    albums = S.immich.list_albums()
     rows = []
     for album in albums:
         if not isinstance(album, dict):
