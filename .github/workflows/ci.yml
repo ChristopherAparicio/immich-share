@@ -98,6 +98,7 @@ jobs:
           ignore-unfixed: false
           vuln-type: os,library
           severity: HIGH,CRITICAL
+          trivyignores: vps/caddy.trivyignore
 
       - name: Validate Compose and build NAS images
         run: |

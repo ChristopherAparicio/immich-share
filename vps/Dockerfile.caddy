@@ -1,6 +1,6 @@
-# Caddy 2.11.4 and the rate-limit module, both pinned. The digest identifies the
+# Caddy 2.11.9 and the rate-limit module, both pinned. The digest identifies the
 # multi-architecture index so this Dockerfile works on amd64 and arm64.
-FROM caddy:2.11.4-builder@sha256:4bdeabce8e79d36b23d1cba7d20598cec2c1117ace960d8ca06071f945e8fc9b AS builder
+FROM caddy:2.11.9-builder@sha256:3fddbec729442a56b942d4c9eaef1df80893dbf2cf5b86701bfae6aad1408eeb AS builder
 # GitHub-hosted runners intermittently receive HTTP/2 stream resets from the
 # Go module proxy and checksum database. This affects build transport only;
 # force the Go client to HTTP/1.1 for a reproducible xcaddy fetch.
@@ -9,12 +9,9 @@ ENV GODEBUG=http2client=0
 # (HIGH/CRITICAL gate in CI); bump them when the scan turns red.
 RUN xcaddy build \
     --with github.com/mholt/caddy-ratelimit@v0.1.0 \
-    --replace google.golang.org/grpc=google.golang.org/grpc@v1.83.1 \
-    --replace golang.org/x/net=golang.org/x/net@v0.56.0 \
-    --replace golang.org/x/crypto=golang.org/x/crypto@v0.55.0 \
-    --replace golang.org/x/text=golang.org/x/text@v0.39.0
+    --replace golang.org/x/net=golang.org/x/net@v0.62.0
 
-FROM caddy:2.11.4-alpine@sha256:5f5c8640aae01df9654968d946d8f1a56c497f1dd5c5cda4cf95ab7c14d58648
+FROM caddy:2.11.9-alpine@sha256:0bbb055bda6793c999bde78b1b5ce3e89f829fb031af2cf50056ea1246559fee
 # curl is unused. Removing it reduces the installed attack surface.
 RUN apk upgrade --no-cache \
  && apk del --no-cache curl
