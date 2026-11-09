@@ -273,8 +273,15 @@ class Immich:
         except urllib.error.URLError as e:
             die(f"Immich is unreachable ({self.url}): {e.reason}")
 
+    # Immich >= 3 lists albums shared with this account too unless asked for
+    # owned ones only; Immich 2 drops the unknown parameter and lists owned ones.
+    OWNED_ALBUMS = "/albums?isOwned=true"
+
+    def list_albums(self) -> list:
+        return self._call("GET", self.OWNED_ALBUMS) or []
+
     def find_album(self, name: str) -> dict:
-        albums = self._call("GET", "/albums")
+        albums = self.list_albums()
         if UUID_RE.fullmatch(name):
             by_id = [a for a in albums if str(a.get("id", "")).lower() == name.lower()]
             if not by_id:
@@ -327,7 +334,7 @@ class Immich:
     def probe(self) -> str:
         """Validate scoped API access without exposing album or asset details."""
         req = urllib.request.Request(
-            f"{self.url}/api/albums",
+            f"{self.url}/api{self.OWNED_ALBUMS}",
             headers={"x-api-key": self.api_key, "Accept": "application/json"},
         )
         try:

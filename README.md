@@ -171,6 +171,12 @@ available to that account. Access to a shared album does not necessarily grant
 permission to publish it; Immich remains responsible for enforcing the album's
 permissions.
 
+The CLI and the console list only albums the account owns
+(`GET /api/albums?isOwned=true`). Immich 3 otherwise also returns albums other
+users shared with it; Immich 2 ignores the parameter and lists owned albums.
+Immich 3 requires the VectorChord database image: migrate from pgvecto.rs while
+still on Immich 2, as described in the upstream upgrade guide.
+
 The current controller is single-account: one configuration selects one API
 key and one managed-share registry. Do not run independent account profiles
 against the same VPS `shares_dir`. Each profile would treat its own registry as

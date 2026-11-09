@@ -93,7 +93,10 @@ Immich Drop, the VPS, or this repository.
 
 The key should have only the permissions required by the pinned CLI version to
 upload assets and create/add to albums. Pin the CLI image by immutable digest
-and use a local or encrypted private Immich endpoint. A typical Linux NAS
+and use a local or encrypted private Immich endpoint. Use the CLI release matching
+the server's major version: CLI 2.x sends upload fields Immich 3 removed. With
+Immich 3 the CLI also sees albums shared with the account, so `--album-name`
+can match another user's album of the same name; pick a unique name. A typical Linux NAS
 invocation is:
 
 ```bash
