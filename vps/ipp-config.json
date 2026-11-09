@@ -26,7 +26,8 @@
 		},
 		"gallery": {
 			"showExpiryDate": true,
-			"showDownloadZip": true
+			"showDownloadZip": true,
+			"groupByDate": "day"
 		},
 		"customInvalidResponse": 404
 	}
