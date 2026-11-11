@@ -743,6 +743,13 @@ resume while the private cache remains valid. Startup and TTL cleanup remove
 stale files. The disk preflight accounts for staged originals, the final
 archive, the fixed reserve, and the percentage budget.
 
+The preflight sizes a non-split ZIP by `maxDownloadZipBytes`, not by the
+selection, so every such ZIP needs
+`(free − minDownloadZipFreeBytes) × ZIP_DISK_BUDGET_PERCENT ≥ 2 × maxDownloadZipBytes`.
+With the defaults that is about 14 GB free on the VPS filesystem, even for a
+small selection. Below it every non-split ZIP fails with 507; keep the disk
+hygiene units below installed and check `df -h /` before opening a share.
+
 One active ZIP lifecycle protects a small VPS. Additional visitors enter a
 bounded in-memory FIFO and see position-independent English status text; the
 queue does not survive an IPP restart and stores no database records. A request
@@ -753,6 +760,30 @@ Public responses reveal no other visitor, share, throughput, or time estimate.
 Theoretical individual-download throughput is
 `DOWNLOAD_RATE × DOWNLOAD_GLOBAL`. Leave 20–25% headroom below measured NAS
 upload capacity.
+
+### VPS disk hygiene
+
+Two things grow without bound on the VPS and eat into the ZIP reserve: the
+Docker build cache (every Caddy or IPP rebuild adds to it) and the systemd
+journal. `vps/maintenance/` caps both. The timer runs
+`docker builder prune --all --force` weekly; it never removes images,
+containers or volumes, so rollback images stay. The journald drop-in caps the
+journal at 200 MB. Neither restarts Caddy, IPP or the guards.
+
+```bash
+sudo install -m 0644 vps/maintenance/immich-share-docker-gc.service /etc/systemd/system/immich-share-docker-gc.service
+sudo install -m 0644 vps/maintenance/immich-share-docker-gc.timer /etc/systemd/system/immich-share-docker-gc.timer
+sudo install -d -m 0755 /etc/systemd/journald.conf.d
+sudo install -m 0644 vps/maintenance/50-immich-share-journald.conf /etc/systemd/journald.conf.d/50-immich-share-journald.conf
+sudo systemctl daemon-reload
+sudo systemctl enable --now immich-share-docker-gc.timer
+sudo systemctl restart systemd-journald
+sudo journalctl --vacuum-size=200M
+systemctl list-timers immich-share-docker-gc.timer --no-pager
+```
+
+After a manual image rebuild, `sudo systemctl start immich-share-docker-gc`
+frees the cache immediately instead of waiting for the timer.
 
 ### Controlled benchmark
 
