@@ -1,0 +1,12 @@
+# Weekly trigger for immich-share-docker-gc.service.
+# Install: /etc/systemd/system/immich-share-docker-gc.timer (vps/maintenance/)
+[Unit]
+Description=Weekly immich-share Docker build cache cleanup
+
+[Timer]
+OnCalendar=weekly
+RandomizedDelaySec=1h
+Persistent=true
+
+[Install]
+WantedBy=timers.target

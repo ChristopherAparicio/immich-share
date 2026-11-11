@@ -1,0 +1,16 @@
+# immich-share VPS disk hygiene: drop the Docker build cache.
+# Install: /etc/systemd/system/immich-share-docker-gc.service (vps/maintenance/)
+#
+# Only the BuildKit cache is removed. Images (running, rollback-tagged or
+# digest-pinned), containers, volumes and networks are never touched, so a
+# rollback image stays available. The cache only speeds up rebuilds of the
+# Caddy and IPP images, which happen rarely, and otherwise grows unbounded
+# and eats into the IPP ZIP disk reserve (SETUP.md, "VPS disk hygiene").
+[Unit]
+Description=immich-share Docker build cache cleanup
+Requires=docker.service
+After=docker.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/docker builder prune --all --force
