@@ -1,4 +1,4 @@
-FROM nginx:1.31.4-alpine@sha256:db35bfc6b2951e7f8a72db5db120288c127ffaeeb4a6d4b95a26fead017d5913
+FROM nginx:1.31.8-alpine@sha256:713fc2ebfd92e8217db451477182ee91944b123d2b1ee9fd5a8c6e91ca6c3a11
 
 RUN apk upgrade --no-cache \
     && rm /docker-entrypoint.d/10-listen-on-ipv6-by-default.sh
