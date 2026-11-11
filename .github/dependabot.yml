@@ -1,0 +1,27 @@
+version: 2
+updates:
+  # Base images of the edge (Caddy, download/upload guards) and NAS (WireGuard,
+  # filter nginx, logrotate) builds. Dependabot keeps the tag@sha256 pin form.
+  - package-ecosystem: docker
+    directories:
+      - /vps
+      - /nas
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 3
+
+  # Pinned runtime images in the compose files (IPP fork release digest).
+  # A version bump also needs the pin assertion in scripts/test-immich-share.py.
+  - package-ecosystem: docker-compose
+    directories:
+      - /vps
+      - /nas
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 2
+
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
