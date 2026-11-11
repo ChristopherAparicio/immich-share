@@ -48,7 +48,7 @@ services:
   ipp:
     # Separate AGPL fork. Release deployments append the verified immutable
     # multi-architecture digest to this exact version tag.
-    image: ghcr.io/christopheraparicio/immich-public-proxy:3.2.1-immich-share.10@sha256:f7f66ea5c8eb4fc76be42bb16b2c78ce6c7d1ba77b9f2bd218a590c1741d9a07
+    image: ghcr.io/christopheraparicio/immich-public-proxy:3.2.1-immich-share.11@sha256:27651b3c5ba27c3e3c1b3c16f67e0ed562db7765e7c6857378f0d9ac126614e7
     container_name: ipp
     init: true
     restart: unless-stopped
